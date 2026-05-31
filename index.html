@@ -6,265 +6,339 @@
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="apple-mobile-web-app-title" content="StockMate"/>
-<meta name="mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#0a0a0f"/>
-<title>StockMate</title>
+<title>StockMate Pro</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-  html,body{height:100%;overflow:hidden}
-  body{
-    background:#0a0a0f;
-    color:#f1f5f9;
-    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;
-    overscroll-behavior:none;
-    -webkit-user-select:none;
-    user-select:none;
-  }
-  /* Allow text selection in inputs */
-  input,textarea{-webkit-user-select:text;user-select:text;}
-  #root{
-    width:100%;
-    max-width:430px;
-    margin:0 auto;
-    height:100%;
-    height:100dvh;
-    display:flex;
-    flex-direction:column;
-    overflow:hidden;
-  }
-  input,select,button{font-family:inherit}
-  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
-  input[type=date]{color-scheme:dark}
-  /* Prevent iOS zoom on input focus */
-  input,select,textarea{font-size:16px !important}
-  /* Smooth scroll */
-  .scroll-area{
-    flex:1;
-    overflow-y:auto;
-    -webkit-overflow-scrolling:touch;
-    overscroll-behavior-y:contain;
-  }
-  /* Install banner */
-  #install-banner{
-    display:none;
-    position:fixed;
-    bottom:0;left:0;right:0;
-    background:linear-gradient(135deg,#1e3a5f,#0f2744);
-    border-top:1px solid #3b82f6;
-    padding:12px 16px;
-    padding-bottom:calc(12px + env(safe-area-inset-bottom));
-    z-index:999;
-    text-align:center;
-  }
-  #install-banner.show{display:block}
-  #install-banner p{font-size:13px;color:#93c5fd;line-height:1.5}
-  #install-banner strong{color:#fff}
-  #install-banner button{
-    margin-top:8px;
-    background:#1d4ed8;
-    border:none;border-radius:8px;
-    color:#fff;font-size:13px;font-weight:600;
-    padding:7px 20px;cursor:pointer;
-  }
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:#0a0a0f}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;color:#f1f5f9;overscroll-behavior:none;-webkit-user-select:none;user-select:none}
+input,textarea{-webkit-user-select:text;user-select:text}
+#root{width:100%;max-width:430px;margin:0 auto;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+input,select,button{font-family:inherit;font-size:16px!important}
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+input[type=date]{color-scheme:dark}
+.scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
 </style>
 </head>
 <body>
 <div id="root"></div>
-
-<!-- iOS Install Banner (shown when NOT in standalone mode) -->
-<div id="install-banner">
-  <p>📲 To use StockMate as an app:<br/>Tap <strong>Share ⬆️</strong> → <strong>"Add to Home Screen"</strong></p>
-  <button onclick="document.getElementById('install-banner').classList.remove('show')">Got it ✓</button>
-</div>
-
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script>
-// Show install banner if not running as standalone PWA
-(function(){
-  var isStandalone = window.navigator.standalone === true
-    || window.matchMedia('(display-mode: standalone)').matches;
-  if(!isStandalone){
-    document.getElementById('install-banner').classList.add('show');
-  }
-})();
+const {useState,useEffect,useRef,useCallback}=React;
+const h=React.createElement;
 
-const {useState,useEffect,useCallback,useRef}=React;
+// ── CONSTANTS ────────────────────────────────────────────────────────────────
+const PRODUCTS=[
+  {id:'HB',  name:'HB',               sheetPcs:2, cartonPcs:12},
+  {id:'PP',  name:'Piper',            sheetPcs:3, cartonPcs:12},
+  {id:'KSB', name:'KR Sticker Blue',  sheetPcs:2, cartonPcs:12},
+  {id:'KSR', name:'KR Sticker Red',   sheetPcs:2, cartonPcs:12},
+  {id:'KIB', name:'KR Inner Blue',    sheetPcs:1, cartonPcs:12},
+  {id:'KIR', name:'KR Inner Red',     sheetPcs:1, cartonPcs:12},
+  {id:'HC',  name:'High Commissioner',sheetPcs:2, cartonPcs:12},
+  {id:'KAL', name:'Kalinska',         sheetPcs:2, cartonPcs:12},
+  {id:'GUN', name:'Major Gun',        sheetPcs:2, cartonPcs:12},
+];
+const PROD_MAP=Object.fromEntries(PRODUCTS.map(p=>[p.id,p]));
+const UNITS=['pcs','sheet','carton'];
+const TABS=[
+  {id:'dash',  icon:'🏠', label:'Home'},
+  {id:'stock', icon:'📦', label:'Stock'},
+  {id:'sales', icon:'💰', label:'Sales'},
+  {id:'supply', icon:'🚚', label:'Supply'},
+  {id:'report',icon:'📊', label:'Report'},
+];
+const PASS='1989';
 
-// ── Storage: IndexedDB with localStorage fallback ────────────────────────────
-// On iOS Home Screen, localStorage can be cleared by the OS.
-// We use IndexedDB (more persistent) with localStorage as fallback.
-const DB_NAME='stockmate_db', DB_VER=1, DB_STORE='kv';
-let dbReady=null;
+// ── STORAGE ──────────────────────────────────────────────────────────────────
+let _db=null;
 function openDB(){
-  if(dbReady)return dbReady;
-  dbReady=new Promise((res,rej)=>{
-    const req=indexedDB.open(DB_NAME,DB_VER);
-    req.onupgradeneeded=e=>e.target.result.createObjectStore(DB_STORE);
-    req.onsuccess=e=>res(e.target.result);
-    req.onerror=()=>rej(req.error);
+  if(_db)return Promise.resolve(_db);
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open('sm2',1);
+    r.onupgradeneeded=e=>e.target.result.createObjectStore('kv');
+    r.onsuccess=e=>{_db=e.target.result;res(_db)};
+    r.onerror=()=>rej(r.error);
   });
-  return dbReady;
 }
-async function idbGet(k){
+async function dbGet(k){
   try{
     const db=await openDB();
     return new Promise((res,rej)=>{
-      const tx=db.transaction(DB_STORE,'readonly');
-      const req=tx.objectStore(DB_STORE).get(k);
-      req.onsuccess=()=>res(req.result??null);
-      req.onerror=()=>rej(req.error);
+      const tx=db.transaction('kv','readonly');
+      const rq=tx.objectStore('kv').get(k);
+      rq.onsuccess=()=>res(rq.result??null);
+      rq.onerror=()=>rej(rq.error);
     });
-  }catch{
-    try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}
-  }
+  }catch{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}}
 }
-async function idbSet(k,v){
+async function dbSet(k,v){
   try{
     const db=await openDB();
     return new Promise((res,rej)=>{
-      const tx=db.transaction(DB_STORE,'readwrite');
-      tx.objectStore(DB_STORE).put(v,k);
-      tx.oncomplete=()=>res();
-      tx.onerror=()=>rej(tx.error);
+      const tx=db.transaction('kv','readwrite');
+      tx.objectStore('kv').put(v,k);
+      tx.oncomplete=res;tx.onerror=()=>rej(tx.error);
     });
-  }catch{
-    try{localStorage.setItem(k,JSON.stringify(v))}catch{}
-  }
+  }catch{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
 }
+function lsGet(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
 
-// Sync wrappers used at startup (fallback to localStorage for initial load)
-const loadSync=k=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}};
-const saveSync=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-const uid=()=>Math.random().toString(36).slice(2,9);
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36);
 const fmt=n=>Number(n||0).toFixed(2);
+const fmtC=n=>Number(n||0).toFixed(3);
 const today=()=>new Date().toISOString().slice(0,10);
-const TABS=["Dashboard","Stock","Remove","Debt","Summary"];
-const TAB_ICON={Dashboard:"🏠",Stock:"📥",Remove:"📤",Debt:"💳",Summary:"📊"};
+const nowISO=()=>new Date().toISOString();
 
-// ── Styles ───────────────────────────────────────────────────────────────────
+// Convert any input to pcs
+function toPcs(qty,unit,prodId){
+  const p=PROD_MAP[prodId];
+  if(!p)return Number(qty);
+  const q=Number(qty)||0;
+  if(unit==='pcs')return q;
+  if(unit==='sheet')return q*p.sheetPcs;
+  if(unit==='carton')return q*p.cartonPcs;
+  return q;
+}
+// Convert pcs to cartons (for display)
+function toCartons(pcs,prodId){
+  const p=PROD_MAP[prodId];
+  if(!p)return pcs;
+  return pcs/p.cartonPcs;
+}
+// Format qty display always in cartons
+function dispCartons(pcs,prodId){
+  const c=toCartons(pcs,prodId);
+  if(Number.isInteger(c))return c+'ctn';
+  return c.toFixed(2)+'ctn';
+}
+
+// Low stock threshold = 12 pcs (1 carton)
+const LOW_THRESH=12;
+
+// ── STYLES ───────────────────────────────────────────────────────────────────
+const C={
+  bg:'#0a0a0f',bg2:'#0f172a',bg3:'#111827',
+  border:'#1e293b',border2:'#1f2937',
+  green:'#4ade80',red:'#f87171',orange:'#fb923c',
+  blue:'#60a5fa',purple:'#a78bfa',yellow:'#fbbf24',cyan:'#67e8f9',
+  muted:'#6b7280',muted2:'#4b5563',muted3:'#374151',
+};
 const S={
-  header:{
-    background:"linear-gradient(135deg,#0f172a,#1a1a2e)",
-    padding:`calc(env(safe-area-inset-top) + 14px) 16px 12px`,
-    display:"flex",justifyContent:"space-between",alignItems:"center",
-    borderBottom:"1px solid #1e293b",
-    flexShrink:0,
-  },
-  logo:{fontSize:20,fontWeight:800,letterSpacing:"-0.5px"},
-  content:{flex:1,overflowY:"auto",paddingBottom:8,WebkitOverflowScrolling:"touch"},
-  nav:{
-    flexShrink:0,
-    background:"#0f172a",
-    borderTop:"1px solid #1e293b",
-    display:"flex",justifyContent:"space-around",
-    padding:`6px 0 calc(6px + env(safe-area-inset-bottom))`,
-  },
-  navBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:"4px 0",gap:2},
-  page:{padding:12,display:"flex",flexDirection:"column",gap:12,paddingBottom:16},
-  card:{background:"#0f172a",border:"1px solid #1e293b",borderRadius:16,padding:14},
-  cardTitle:{fontSize:14,fontWeight:700,color:"#93c5fd",marginBottom:10,letterSpacing:"0.3px"},
-  grid2:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10},
-  kpi:{background:"#0f172a",border:"1px solid",borderRadius:14,padding:"12px 10px",display:"flex",flexDirection:"column",gap:4},
-  entryCard:{background:"#111827",borderRadius:12,border:"1px solid #1f2937",padding:10,marginBottom:8},
-  row:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #111827"},
-  row2:{display:"flex",gap:8,marginBottom:8},
-  label:{fontSize:12,color:"#6b7280",fontWeight:600,display:"block",marginBottom:4},
-  input:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontSize:16,outline:"none",WebkitAppearance:"none",appearance:"none"},
-  select:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontSize:16,outline:"none",WebkitAppearance:"none",appearance:"none"},
-  btnGreen:{width:"100%",background:"linear-gradient(135deg,#14532d,#166534)",border:"none",borderRadius:12,padding:14,color:"#4ade80",fontWeight:700,fontSize:16,cursor:"pointer",marginTop:4},
-  btnRed:{width:"100%",background:"linear-gradient(135deg,#7f1d1d,#991b1b)",border:"none",borderRadius:12,padding:14,color:"#fca5a5",fontWeight:700,fontSize:16,cursor:"pointer",marginTop:4},
-  btnOrange:{width:"100%",background:"linear-gradient(135deg,#78350f,#92400e)",border:"none",borderRadius:12,padding:14,color:"#fdba74",fontWeight:700,fontSize:16,cursor:"pointer"},
-  btnBlue:{width:"100%",background:"linear-gradient(135deg,#1e3a8a,#1d4ed8)",border:"none",borderRadius:12,padding:14,color:"#93c5fd",fontWeight:700,fontSize:16,cursor:"pointer"},
-  btnSmall:{flex:1,border:"none",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontWeight:600,fontSize:14,cursor:"pointer"},
-  iconBtn:{border:"none",borderRadius:8,padding:"8px 10px",color:"#fff",fontSize:15,cursor:"pointer",lineHeight:1,minWidth:38,minHeight:38,display:"flex",alignItems:"center",justifyContent:"center"},
-  badge:{fontSize:11,fontWeight:700,borderRadius:8,padding:"3px 8px",color:"#fff"},
-  empty:{color:"#374151",fontSize:13,textAlign:"center",padding:"16px 0"},
-  vpill:{fontSize:11,fontWeight:600,borderRadius:8,padding:"3px 8px",display:"inline-block",marginTop:4},
+  page:{padding:12,display:'flex',flexDirection:'column',gap:10,paddingBottom:16},
+  card:{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:16,padding:14},
+  cardT:{fontSize:13,fontWeight:700,color:C.blue,marginBottom:10,letterSpacing:'0.3px'},
+  grid2:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8},
+  row:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:`1px solid ${C.bg3}`},
+  row2:{display:'flex',gap:8,marginBottom:8},
+  lbl:{fontSize:12,color:C.muted,fontWeight:600,display:'block',marginBottom:4},
+  inp:{width:'100%',background:'#1e293b',border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:'#f1f5f9',outline:'none',WebkitAppearance:'none'},
+  sel:{width:'100%',background:'#1e293b',border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:'#f1f5f9',outline:'none',WebkitAppearance:'none'},
+  btn:{border:'none',borderRadius:12,padding:'13px 14px',fontWeight:700,cursor:'pointer',width:'100%'},
+  btnSm:{border:'none',borderRadius:10,padding:'10px 12px',fontWeight:600,cursor:'pointer',flex:1},
+  iconBtn:{border:'none',borderRadius:8,padding:'8px 10px',fontSize:15,cursor:'pointer',minWidth:36,minHeight:36,display:'flex',alignItems:'center',justifyContent:'center'},
+  badge:{fontSize:11,fontWeight:700,borderRadius:8,padding:'3px 8px'},
+  empty:{color:C.muted3,fontSize:13,textAlign:'center',padding:'14px 0'},
+  kpi:{background:C.bg2,border:'1px solid',borderRadius:14,padding:'12px 10px',display:'flex',flexDirection:'column',gap:3},
 };
 
-// ── Input component ──────────────────────────────────────────────────────────
-function Inp({label,value,onChange,type="text",placeholder=""}){
-  return React.createElement("div",{style:{marginBottom:8}},
-    label&&React.createElement("label",{style:S.label},label),
-    React.createElement("input",{
-      type,value,
-      onChange:e=>onChange(e.target.value),
-      placeholder,
-      inputMode:type==="number"?"decimal":"text",
-      style:S.input,
-      autoComplete:"off",
-      autoCorrect:"off",
-      autoCapitalize:type==="number"?"none":"words",
-    })
+// ── COMPONENTS ────────────────────────────────────────────────────────────────
+function Inp({label,value,onChange,type='text',placeholder='',half}){
+  return h('div',{style:{marginBottom:8,flex:half?1:undefined}},
+    label&&h('label',{style:S.lbl},label),
+    h('input',{type,value,onChange:e=>onChange(e.target.value),placeholder,
+      inputMode:type==='number'?'decimal':'text',style:S.inp,
+      autoComplete:'off',autoCorrect:'off',autoCapitalize:'none'})
   );
 }
-
-// ── KPI Card ─────────────────────────────────────────────────────────────────
+function Sel({label,value,onChange,options,half}){
+  return h('div',{style:{marginBottom:8,flex:half?1:undefined}},
+    label&&h('label',{style:S.lbl},label),
+    h('select',{value,onChange:e=>onChange(e.target.value),style:S.sel},
+      options.map(o=>h('option',{key:o.v||o,value:o.v||o},o.l||o))
+    )
+  );
+}
+function Btn({label,onClick,color='#166534',text='#4ade80',style:{}}){
+  return h('button',{onClick,style:{...S.btn,background:color,color:text,...style}},label);
+}
 function KpiCard({label,value,color,icon}){
-  return React.createElement("div",{style:{...S.kpi,borderColor:color}},
-    React.createElement("span",{style:{fontSize:20}},icon),
-    React.createElement("span",{style:{fontSize:18,fontWeight:800,color,letterSpacing:"-0.5px"}},value),
-    React.createElement("span",{style:{fontSize:10,color:"#64748b",lineHeight:1.2}},label)
+  return h('div',{style:{...S.kpi,borderColor:color}},
+    h('span',{style:{fontSize:18}},icon),
+    h('span',{style:{fontSize:16,fontWeight:800,color,letterSpacing:'-0.5px'}},value),
+    h('span',{style:{fontSize:10,color:C.muted,lineHeight:1.2}},label)
+  );
+}
+function SumRow({label,val,color='#f1f5f9'}){
+  return h('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid ${C.bg3}`}},
+    h('span',{style:{color:C.muted,fontSize:13}},label),
+    h('span',{style:{color,fontWeight:700,fontSize:13}},val)
   );
 }
 
-// ── SumRow ────────────────────────────────────────────────────────────────────
-function SumRow({label,val,color}){
-  return React.createElement("div",{style:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827"}},
-    React.createElement("span",{style:{color:"#9ca3af",fontSize:13}},label),
-    React.createElement("span",{style:{color,fontWeight:700,fontSize:14}},val)
+// Photo picker
+function PhotoPicker({value,onChange}){
+  const ref=useRef();
+  return h('div',{style:{marginBottom:8}},
+    h('label',{style:S.lbl},'Product Photo (optional)'),
+    h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+      value?h('img',{src:value,style:{width:50,height:50,borderRadius:8,objectFit:'cover',border:`1px solid ${C.border}`}}):
+        h('div',{style:{width:50,height:50,borderRadius:8,background:C.bg3,border:`1px dashed ${C.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:20}},'📷'),
+      h('label',{style:{...S.btnSm,background:'#1e3a5f',color:C.blue,textAlign:'center',padding:'10px 14px',borderRadius:10,cursor:'pointer',flex:1}},
+        value?'Change Photo':'Add Photo',
+        h('input',{type:'file',accept:'image/*',style:{display:'none'},
+          onChange:e=>{
+            const f=e.target.files[0];
+            if(!f)return;
+            const r=new FileReader();
+            r.onload=ev=>onChange(ev.target.result);
+            r.readAsDataURL(f);
+            e.target.value='';
+          }})
+      ),
+      value&&h('button',{onClick:()=>onChange(''),style:{...S.iconBtn,background:C.muted3,color:'#fff'}},'✕')
+    )
+  );
+}
+
+// ══ MAIN APP ══════════════════════════════════════════════════════════════════
+function App(){
+  const [tab,setTab]=useState('dash');
+  const [loaded,setLoaded]=useState(false);
+
+  // Core data
+  const [stockEntries,setStockEntries]=useState(()=>lsGet('sm_stock2')||[]);
+  const [sales,setSales]=useState(()=>lsGet('sm_sales2')||[]);
+  const [suppliers,setSuppliers]=useState(()=>lsGet('sm_suppliers')||[]);
+  const [supplyTx,setSupplyTx]=useState(()=>lsGet('sm_supplytx')||[]);
+  const [customers,setCustomers]=useState(()=>lsGet('sm_customers')||[]);
+  const [productPhotos,setProductPhotos]=useState(()=>lsGet('sm_photos')||{});
+
+  // Load from IndexedDB
+  useEffect(()=>{
+    Promise.all([
+      dbGet('sm_stock2'),dbGet('sm_sales2'),dbGet('sm_suppliers'),
+      dbGet('sm_supplytx'),dbGet('sm_customers'),dbGet('sm_photos')
+    ]).then(([st,sa,su,tx,cu,ph])=>{
+      if(st)setStockEntries(st);
+      if(sa)setSales(sa);
+      if(su)setSuppliers(su);
+      if(tx)setSupplyTx(tx);
+      if(cu)setCustomers(cu);
+      if(ph)setProductPhotos(ph);
+      setLoaded(true);
+    }).catch(()=>setLoaded(true));
+  },[]);
+
+  useEffect(()=>{if(loaded){lsSet('sm_stock2',stockEntries);dbSet('sm_stock2',stockEntries)}},[stockEntries,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm_sales2',sales);dbSet('sm_sales2',sales)}},[sales,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm_suppliers',suppliers);dbSet('sm_suppliers',suppliers)}},[suppliers,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm_supplytx',supplyTx);dbSet('sm_supplytx',supplyTx)}},[supplyTx,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm_customers',customers);dbSet('sm_customers',customers)}},[customers,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm_photos',productPhotos);dbSet('sm_photos',productPhotos)}},[productPhotos,loaded]);
+
+  // Compute stock map: prodId -> {totalPcs, costLayers:[{pcs,costPerPcs}]}
+  function getStockMap(){
+    const m={};
+    PRODUCTS.forEach(p=>{m[p.id]={totalPcs:0,layers:[],photo:productPhotos[p.id]||''}});
+    stockEntries.forEach(e=>{
+      if(!m[e.prodId])return;
+      const pcs=toPcs(e.qty,e.unit,e.prodId);
+      const cpp=Number(e.costPerCarton)/PROD_MAP[e.prodId].cartonPcs;
+      m[e.prodId].totalPcs+=pcs;
+      m[e.prodId].layers.push({pcs,cpp,costPerCarton:Number(e.costPerCarton),date:e.date});
+    });
+    // subtract sales
+    sales.forEach(s=>{
+      if(!m[s.prodId])return;
+      const pcs=toPcs(s.qty,s.unit,s.prodId);
+      m[s.prodId].totalPcs-=pcs;
+    });
+    return m;
+  }
+
+  // Get last highest buy cost per carton for a product
+  function getLastHighCost(prodId){
+    const entries=stockEntries.filter(e=>e.prodId===prodId);
+    if(!entries.length)return 0;
+    // top to low: sort by cost desc, use highest
+    const sorted=[...entries].sort((a,b)=>Number(b.costPerCarton)-Number(a.costPerCarton));
+    return Number(sorted[0].costPerCarton);
+  }
+
+  const stockMap=getStockMap();
+  const lowStockItems=PRODUCTS.filter(p=>stockMap[p.id].totalPcs<LOW_THRESH&&stockMap[p.id].totalPcs>=0);
+
+  const props={tab,setTab,stockEntries,setStockEntries,sales,setSales,
+    suppliers,setSuppliers,supplyTx,setSupplyTx,customers,setCustomers,
+    productPhotos,setProductPhotos,stockMap,getLastHighCost,lowStockItems};
+
+  return h('div',{style:{background:C.bg,height:'100dvh',display:'flex',flexDirection:'column',maxWidth:430,margin:'0 auto',overflow:'hidden'}},
+    // Header
+    h('div',{style:{background:'linear-gradient(135deg,#0f172a,#1a1a2e)',padding:`calc(env(safe-area-inset-top)+12px) 16px 10px`,display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:`1px solid ${C.border}`,flexShrink:0}},
+      h('span',{style:{fontSize:18,fontWeight:800,letterSpacing:'-0.5px'}},'📦 StockMate Pro'),
+      lowStockItems.length>0&&h('span',{style:{...S.badge,background:'#7f1d1d',color:'#fca5a5'}},`⚠️ ${lowStockItems.length} low`)
+    ),
+    // Content
+    h('div',{style:{flex:1,overflowY:'auto',WebkitOverflowScrolling:'touch',overscrollBehavior:'contain'}},
+      tab==='dash'&&h(Dashboard,props),
+      tab==='stock'&&h(StockPage,props),
+      tab==='sales'&&h(SalesPage,props),
+      tab==='supply'&&h(SupplyPage,props),
+      tab==='report'&&h(ReportPage,props),
+    ),
+    // Nav
+    h('nav',{style:{flexShrink:0,background:'#0f172a',borderTop:`1px solid ${C.border}`,display:'flex',justifyContent:'space-around',padding:`6px 0 calc(6px + env(safe-area-inset-bottom))`}},
+      TABS.map(t=>h('button',{key:t.id,onClick:()=>setTab(t.id),style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',background:'none',border:'none',cursor:'pointer',padding:'4px 0',gap:2,color:tab===t.id?C.blue:C.muted2}},
+        h('span',{style:{fontSize:18}},t.icon),
+        h('span',{style:{fontSize:9,fontWeight:600}},t.label)
+      ))
+    )
   );
 }
 
 // ══ DASHBOARD ════════════════════════════════════════════════════════════════
-function Dashboard({stock,removals,debts}){
-  const stockMap={};
-  stock.forEach(e=>{
-    if(!stockMap[e.name])stockMap[e.name]={name:e.name,totalPcs:0};
-    stockMap[e.name].totalPcs+=Number(e.pcs);
-  });
-  const remMap={};
-  removals.forEach(e=>{
-    if(!remMap[e.name])remMap[e.name]=0;
-    remMap[e.name]+=Number(e.pcs);
-  });
-  const totalIn=stock.reduce((a,e)=>a+Number(e.pcs)*Number(e.price),0);
-  const totalOut=removals.reduce((a,e)=>a+Number(e.pcs)*Number(e.price),0);
-  const openDebts=debts.filter(d=>!d.paid);
-  const totalDebt=openDebts.reduce((a,d)=>a+d.items.reduce((b,i)=>b+Number(i.qty)*Number(i.price),0),0);
-  const varieties=Object.keys(stockMap).length;
+function Dashboard({stockMap,sales,supplyTx,customers,lowStockItems,setTab}){
+  const totalStockVal=PRODUCTS.reduce((a,p)=>{
+    const m=stockMap[p.id];
+    const cpp=m.layers.length?Math.max(...m.layers.map(l=>l.cpp)):0;
+    return a+m.totalPcs*cpp;
+  },0);
+  const totalSalesVal=sales.reduce((a,s)=>a+Number(s.saleTotal),0);
+  const openCustDebt=customers.reduce((a,c)=>a+Number(c.pendingAmt||0),0);
+  const openSupplyDebt=supplyTx.filter(t=>!t.paid).reduce((a,t)=>a+Number(t.amount),0);
 
-  return React.createElement("div",{style:S.page},
-    React.createElement("div",{style:S.grid2},
-      React.createElement(KpiCard,{label:"Total Stock Value",value:`﷼${fmt(totalIn)}`,color:"#4ade80",icon:"💰"}),
-      React.createElement(KpiCard,{label:"Total Removed",value:`﷼${fmt(totalOut)}`,color:"#f87171",icon:"📤"}),
-      React.createElement(KpiCard,{label:"Open Debts",value:`﷼${fmt(totalDebt)}`,color:"#fb923c",icon:"💳"}),
-      React.createElement(KpiCard,{label:"Varieties",value:varieties,color:"#818cf8",icon:"🗂️"})
+  return h('div',{style:S.page},
+    h('div',{style:S.grid2},
+      h(KpiCard,{label:'Stock Value',value:`﷼${fmt(totalStockVal)}`,color:C.green,icon:'💰'}),
+      h(KpiCard,{label:'Total Sales',value:`﷼${fmt(totalSalesVal)}`,color:C.blue,icon:'🛒'}),
+      h(KpiCard,{label:'Customer Pending',value:`﷼${fmt(openCustDebt)}`,color:C.orange,icon:'👤'}),
+      h(KpiCard,{label:'Supplier Pending',value:`﷼${fmt(openSupplyDebt)}`,color:C.red,icon:'🚚'})
     ),
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"📦 Current Stock Overview"),
-      Object.keys(stockMap).length===0&&React.createElement("div",{style:S.empty},"No stock added yet"),
-      Object.values(stockMap).map(item=>{
-        const cur=item.totalPcs-(remMap[item.name]||0);
-        return React.createElement("div",{key:item.name,style:S.row},
-          React.createElement("span",{style:{fontWeight:600,fontSize:14}},item.name),
-          React.createElement("span",{style:{...S.badge,background:cur<0?"#dc2626":"#166534"}},`${cur} pcs`)
-        );
-      })
+    // Low stock alerts
+    lowStockItems.length>0&&h('div',{style:{...S.card,borderColor:'#dc2626'}},
+      h('div',{style:{...S.cardT,color:'#f87171'}},'⚠️ Low Stock Alert'),
+      lowStockItems.map(p=>h('div',{key:p.id,style:S.row},
+        h('span',{style:{fontSize:13,fontWeight:600}},p.name),
+        h('span',{style:{...S.badge,background:'#7f1d1d',color:'#fca5a5'}},`${dispCartons(stockMap[p.id].totalPcs,p.id)} left`)
+      ))
     ),
-    openDebts.length>0&&React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"💳 Outstanding Debts"),
-      openDebts.map(d=>{
-        const total=d.items.reduce((a,i)=>a+Number(i.qty)*Number(i.price),0);
-        return React.createElement("div",{key:d.id,style:S.row},
-          React.createElement("div",null,
-            React.createElement("div",{style:{fontWeight:600,fontSize:14}},d.debtor),
-            React.createElement("div",{style:{fontSize:11,color:"#6b7280"}},`Due: ${d.dueDate||"—"}`)
+    // Stock overview
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'📦 Stock Overview'),
+      PRODUCTS.map(p=>{
+        const m=stockMap[p.id];
+        const ctns=toCartons(m.totalPcs,p.id);
+        const low=m.totalPcs<LOW_THRESH;
+        return h('div',{key:p.id,style:S.row},
+          h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+            m.photo&&h('img',{src:m.photo,style:{width:28,height:28,borderRadius:6,objectFit:'cover'}}),
+            h('span',{style:{fontSize:13,fontWeight:600}},p.id)
           ),
-          React.createElement("span",{style:{...S.badge,background:"#92400e"}},`﷼${fmt(total)}`)
+          h('span',{style:{...S.badge,background:low?'#7f1d1d':'#166534',color:low?'#fca5a5':'#4ade80'}},`${ctns%1===0?ctns:ctns.toFixed(2)} ctn`)
         );
       })
     )
@@ -272,400 +346,441 @@ function Dashboard({stock,removals,debts}){
 }
 
 // ══ STOCK PAGE ═══════════════════════════════════════════════════════════════
-function StockPage({stock,setStock}){
-  const [form,setForm]=useState({name:"",pcs:"",price:"",unit:"pcs"});
-  const [editId,setEditId]=useState(null);
-  const [editData,setEditData]=useState({});
-  const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
-  const add=()=>{
-    if(!form.name.trim()||!form.pcs||!form.price)return alert("Please fill all fields");
-    setStock(p=>[...p,{id:uid(),...form,name:form.name.trim(),date:today()}]);
-    setForm({name:"",pcs:"",price:"",unit:"pcs"});
-  };
-  return React.createElement("div",{style:S.page},
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"📥 Add Stock Entry"),
-      React.createElement(Inp,{label:"Item Name",value:form.name,onChange:v=>upd("name",v),placeholder:"e.g. Rice"}),
-      React.createElement("div",{style:S.row2},
-        React.createElement("div",{style:{flex:1}},React.createElement(Inp,{label:"Quantity",value:form.pcs,onChange:v=>upd("pcs",v),type:"number",placeholder:"0"})),
-        React.createElement("div",{style:{flex:1}},
-          React.createElement("label",{style:S.label},"Unit"),
-          React.createElement("select",{value:form.unit,onChange:e=>upd("unit",e.target.value),style:S.select},
-            ["pcs","carton","kg","box","litre"].map(u=>React.createElement("option",{key:u,value:u},u))
-          )
-        )
-      ),
-      React.createElement(Inp,{label:"Price per unit (﷼)",value:form.price,onChange:v=>upd("price",v),type:"number",placeholder:"0.00"}),
-      React.createElement("button",{onClick:add,style:S.btnGreen},"+ Add to Stock")
-    ),
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},`📋 Stock Entries (${stock.length})`),
-      stock.length===0&&React.createElement("div",{style:S.empty},"No entries yet"),
-      [...stock].reverse().map(e=>editId===e.id?
-        React.createElement("div",{key:e.id,style:{...S.entryCard,borderColor:"#4ade80"}},
-          React.createElement(Inp,{label:"Name",value:editData.name,onChange:v=>setEditData(d=>({...d,name:v}))}),
-          React.createElement("div",{style:S.row2},
-            React.createElement(Inp,{label:"Qty",value:editData.pcs,onChange:v=>setEditData(d=>({...d,pcs:v})),type:"number"}),
-            React.createElement(Inp,{label:"Price ﷼",value:editData.price,onChange:v=>setEditData(d=>({...d,price:v})),type:"number"})
-          ),
-          React.createElement("div",{style:S.row2},
-            React.createElement("button",{onClick:()=>{setStock(p=>p.map(x=>x.id===editId?{...x,...editData}:x));setEditId(null);},style:{...S.btnSmall,background:"#166534"}},"Save"),
-            React.createElement("button",{onClick:()=>setEditId(null),style:{...S.btnSmall,background:"#374151"}},"Cancel")
-          )
-        ):
-        React.createElement("div",{key:e.id,style:S.entryCard},
-          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
-            React.createElement("div",null,
-              React.createElement("div",{style:{fontWeight:600,fontSize:14}},e.name),
-              React.createElement("div",{style:{fontSize:12,color:"#6b7280"}},`${e.pcs} ${e.unit} × ﷼${e.price} = `,React.createElement("span",{style:{color:"#4ade80"}},`﷼${fmt(e.pcs*e.price)}`)),
-              React.createElement("div",{style:{fontSize:11,color:"#4b5563"}},`📅 ${e.date}`)
-            ),
-            React.createElement("div",{style:{display:"flex",gap:6}},
-              React.createElement("button",{onClick:()=>{setEditId(e.id);setEditData({...e});},style:{...S.iconBtn,background:"#1e40af"}},"✏️"),
-              React.createElement("button",{onClick:()=>setStock(p=>p.filter(x=>x.id!==e.id)),style:{...S.iconBtn,background:"#7f1d1d"}},"🗑️")
-            )
-          )
-        )
-      )
-    )
-  );
-}
-
-// ══ REMOVE PAGE ══════════════════════════════════════════════════════════════
-function RemovePage({stock,removals,setRemovals}){
-  const [form,setForm]=useState({name:"",pcs:"",price:"",unit:"pcs"});
-  const [editId,setEditId]=useState(null);
-  const [editData,setEditData]=useState({});
-  const stockNames=[...new Set(stock.map(e=>e.name))];
-  const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
-  const remove=()=>{
-    if(!form.name||!form.pcs||!form.price)return alert("Please fill all fields");
-    setRemovals(p=>[...p,{id:uid(),...form,date:today()}]);
-    setForm({name:"",pcs:"",price:"",unit:"pcs"});
-  };
-  const variance=removals.map(r=>{
-    const rel=stock.filter(s=>s.name===r.name);
-    const tq=rel.reduce((a,s)=>a+Number(s.pcs),0);
-    const tv=rel.reduce((a,s)=>a+Number(s.pcs)*Number(s.price),0);
-    const avg=tq>0?tv/tq:0;
-    return{...r,variance:Number(r.pcs)*Number(r.price)-Number(r.pcs)*avg};
-  });
-  return React.createElement("div",{style:S.page},
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"📤 Remove from Stock"),
-      React.createElement("div",{style:{marginBottom:8}},
-        React.createElement("label",{style:S.label},"Item Name"),
-        React.createElement("select",{value:form.name,onChange:e=>upd("name",e.target.value),style:S.select},
-          React.createElement("option",{value:""},"— Select item —"),
-          stockNames.map(n=>React.createElement("option",{key:n,value:n},n))
-        )
-      ),
-      React.createElement("div",{style:S.row2},
-        React.createElement("div",{style:{flex:1}},React.createElement(Inp,{label:"Qty Removed",value:form.pcs,onChange:v=>upd("pcs",v),type:"number"})),
-        React.createElement("div",{style:{flex:1}},
-          React.createElement("label",{style:S.label},"Unit"),
-          React.createElement("select",{value:form.unit,onChange:e=>upd("unit",e.target.value),style:S.select},
-            ["pcs","carton","kg","box","litre"].map(u=>React.createElement("option",{key:u,value:u},u))
-          )
-        )
-      ),
-      React.createElement(Inp,{label:"Removal Price ﷼",value:form.price,onChange:v=>upd("price",v),type:"number"}),
-      React.createElement("button",{onClick:remove,style:S.btnRed},"− Remove from Stock")
-    ),
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},`📋 Removal History (${removals.length})`),
-      removals.length===0&&React.createElement("div",{style:S.empty},"No removals yet"),
-      [...variance].reverse().map(r=>editId===r.id?
-        React.createElement("div",{key:r.id,style:{...S.entryCard,borderColor:"#f87171"}},
-          React.createElement(Inp,{label:"Name",value:editData.name,onChange:v=>setEditData(d=>({...d,name:v}))}),
-          React.createElement("div",{style:S.row2},
-            React.createElement(Inp,{label:"Qty",value:editData.pcs,onChange:v=>setEditData(d=>({...d,pcs:v})),type:"number"}),
-            React.createElement(Inp,{label:"Price ﷼",value:editData.price,onChange:v=>setEditData(d=>({...d,price:v})),type:"number"})
-          ),
-          React.createElement("div",{style:S.row2},
-            React.createElement("button",{onClick:()=>{setRemovals(p=>p.map(x=>x.id===editId?{...x,...editData}:x));setEditId(null);},style:{...S.btnSmall,background:"#166534"}},"Save"),
-            React.createElement("button",{onClick:()=>setEditId(null),style:{...S.btnSmall,background:"#374151"}},"Cancel")
-          )
-        ):
-        React.createElement("div",{key:r.id,style:S.entryCard},
-          React.createElement("div",{style:{display:"flex",justifyContent:"space-between"}},
-            React.createElement("div",{style:{flex:1}},
-              React.createElement("div",{style:{fontWeight:600,fontSize:14}},r.name),
-              React.createElement("div",{style:{fontSize:12,color:"#6b7280"}},`${r.pcs} ${r.unit} × ﷼${r.price} = `,React.createElement("span",{style:{color:"#f87171"}},`﷼${fmt(r.pcs*r.price)}`)),
-              React.createElement("div",{style:{fontSize:11,color:"#4b5563"}},`📅 ${r.date}`),
-              React.createElement("div",{style:{...S.vpill,background:r.variance>=0?"#14532d":"#7f1d1d"}},`${r.variance>=0?"▲":"▼"} Variance: ﷼${fmt(Math.abs(r.variance))} ${r.variance>=0?"profit":"loss"}`)
-            ),
-            React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:6}},
-              React.createElement("button",{onClick:()=>{setEditId(r.id);setEditData({...r});},style:{...S.iconBtn,background:"#1e40af"}},"✏️"),
-              React.createElement("button",{onClick:()=>setRemovals(p=>p.filter(x=>x.id!==r.id)),style:{...S.iconBtn,background:"#7f1d1d"}},"🗑️")
-            )
-          )
-        )
-      )
-    )
-  );
-}
-
-// ══ DEBT PAGE ════════════════════════════════════════════════════════════════
-function DebtPage({debts,setDebts,stock,setRemovals}){
-  const [showForm,setShowForm]=useState(false);
-  const [debtor,setDebtor]=useState("");
+function StockPage({stockEntries,setStockEntries,productPhotos,setProductPhotos,stockMap}){
+  const [prodId,setProdId]=useState('HB');
+  const [qty,setQty]=useState('');
+  const [unit,setUnit]=useState('carton');
+  const [cost,setCost]=useState('');
+  const [suppName,setSuppName]=useState('');
   const [date,setDate]=useState(today());
-  const [dueDate,setDueDate]=useState("");
-  const [items,setItems]=useState([{id:uid(),name:"",qty:"",price:""}]);
-  const [expandId,setExpandId]=useState(null);
-  const stockNames=[...new Set(stock.map(e=>e.name))];
-  const addItem=()=>setItems(p=>[...p,{id:uid(),name:"",qty:"",price:""}]);
-  const updItem=(id,f,v)=>setItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
-  const saveDebt=()=>{
-    if(!debtor.trim())return alert("Enter debtor name");
-    if(items.some(i=>!i.name||!i.qty||!i.price))return alert("Fill all item fields");
-    const nd={id:uid(),debtor:debtor.trim(),date,dueDate,items:[...items],paid:false};
-    setDebts(p=>[...p,nd]);
-    items.forEach(i=>setRemovals(p=>[...p,{id:uid(),name:i.name,pcs:i.qty,price:i.price,unit:"pcs",date,note:`Debt:${debtor}`}]));
-    setDebtor("");setDate(today());setDueDate("");setItems([{id:uid(),name:"",qty:"",price:""}]);setShowForm(false);
+
+  const add=()=>{
+    if(!qty||!cost)return alert('Enter qty and cost');
+    const pcs=toPcs(qty,unit,prodId);
+    setStockEntries(p=>[...p,{id:uid(),prodId,qty:Number(qty),unit,pcs,costPerCarton:Number(cost),suppName,date}]);
+    setQty('');setCost('');
   };
-  const openDebts=debts.filter(d=>!d.paid);
-  const paidDebts=debts.filter(d=>d.paid);
-  const openTotal=openDebts.reduce((a,d)=>a+d.items.reduce((b,i)=>b+Number(i.qty)*Number(i.price),0),0);
-  return React.createElement("div",{style:S.page},
-    React.createElement("div",{style:{...S.card,background:"#1c1917",borderColor:"#fb923c"}},
-      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
-        React.createElement("div",null,
-          React.createElement("div",{style:S.cardTitle},"💳 Open Debts"),
-          React.createElement("div",{style:{color:"#fb923c",fontSize:22,fontWeight:700}},`﷼${fmt(openTotal)}`)
-        ),
-        React.createElement("div",{style:{...S.badge,background:"#78350f"}},`${openDebts.length} debtors`)
-      )
-    ),
-    React.createElement("button",{onClick:()=>setShowForm(s=>!s),style:S.btnOrange},showForm?"✕ Cancel":"+ New Debt Entry"),
-    showForm&&React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"New Debt Record"),
-      React.createElement(Inp,{label:"Debtor Name",value:debtor,onChange:setDebtor,placeholder:"e.g. Ahmed"}),
-      React.createElement("div",{style:S.row2},
-        React.createElement("div",{style:{flex:1}},React.createElement("label",{style:S.label},"Date"),React.createElement("input",{type:"date",value:date,onChange:e=>setDate(e.target.value),style:S.input})),
-        React.createElement("div",{style:{flex:1}},React.createElement("label",{style:S.label},"Due Date"),React.createElement("input",{type:"date",value:dueDate,onChange:e=>setDueDate(e.target.value),style:S.input}))
+
+  const updatePhoto=(pid,photo)=>{
+    setProductPhotos(p=>({...p,[pid]:photo}));
+  };
+
+  return h('div',{style:S.page},
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'📥 Add Stock'),
+      h(Sel,{label:'Product',value:prodId,onChange:setProdId,options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+      h('div',{style:S.row2},
+        h(Inp,{label:'Qty',value:qty,onChange:setQty,type:'number',half:true}),
+        h(Sel,{label:'Unit',value:unit,onChange:setUnit,options:UNITS,half:true})
       ),
-      React.createElement("label",{style:{...S.label,marginBottom:8}},"Items Taken"),
-      items.map(item=>React.createElement("div",{key:item.id,style:{...S.entryCard,marginBottom:6}},
-        React.createElement("div",{style:{marginBottom:8}},
-          React.createElement("label",{style:S.label},"Item"),
-          React.createElement("select",{value:item.name,onChange:e=>updItem(item.id,"name",e.target.value),style:S.select},
-            React.createElement("option",{value:""},"— Select —"),
-            stockNames.map(n=>React.createElement("option",{key:n,value:n},n))
-          )
-        ),
-        React.createElement("div",{style:S.row2},
-          React.createElement(Inp,{label:"Qty",value:item.qty,onChange:v=>updItem(item.id,"qty",v),type:"number"}),
-          React.createElement(Inp,{label:"Price ﷼",value:item.price,onChange:v=>updItem(item.id,"price",v),type:"number"})
-        ),
-        React.createElement("div",{style:{color:"#4ade80",fontSize:12,marginBottom:4}},`Total: ﷼${fmt(item.qty*item.price)}`),
-        items.length>1&&React.createElement("button",{onClick:()=>setItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btnSmall,background:"#7f1d1d",marginTop:4,width:"100%"}},"Remove item")
-      )),
-      React.createElement("button",{onClick:addItem,style:{...S.btnSmall,background:"#1e3a5f",marginBottom:8,width:"100%"}},"+ Add another item"),
-      React.createElement("button",{onClick:saveDebt,style:S.btnOrange},"💾 Save Debt")
+      prodId&&qty&&unit&&h('div',{style:{fontSize:12,color:C.cyan,marginBottom:8}},
+        `= ${toPcs(qty,unit,prodId)} pcs = ${(toPcs(qty,unit,prodId)/PROD_MAP[prodId].cartonPcs).toFixed(2)} cartons`
+      ),
+      h(Inp,{label:'Cost per Carton (﷼)',value:cost,onChange:setCost,type:'number'}),
+      h(Inp,{label:'Supplier (optional)',value:suppName,onChange:setSuppName}),
+      h('label',{style:S.lbl},'Date'),
+      h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+      h(PhotoPicker,{value:productPhotos[prodId]||'',onChange:photo=>updatePhoto(prodId,photo)}),
+      h(Btn,{label:'+ Add Stock',onClick:add,color:'#14532d',text:C.green})
     ),
-    openDebts.map(d=>{
-      const total=d.items.reduce((a,i)=>a+Number(i.qty)*Number(i.price),0);
-      const exp=expandId===d.id;
-      return React.createElement("div",{key:d.id,style:{...S.entryCard,borderColor:"#fb923c"}},
-        React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
-          React.createElement("div",{onClick:()=>setExpandId(exp?null:d.id),style:{flex:1,cursor:"pointer",paddingRight:8}},
-            React.createElement("div",{style:{fontWeight:600,fontSize:14}},`${d.debtor} ${exp?"▲":"▼"}`),
-            React.createElement("div",{style:{fontSize:11,color:"#6b7280"}},`📅 ${d.date} | Due: ${d.dueDate||"—"}`),
-            React.createElement("div",{style:{color:"#fb923c",fontWeight:700}},`﷼${fmt(total)}`)
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},`📋 Entries (${stockEntries.length})`),
+      stockEntries.length===0&&h('div',{style:S.empty},'No entries'),
+      [...stockEntries].reverse().map(e=>h('div',{key:e.id,style:{background:C.bg3,borderRadius:10,border:`1px solid ${C.border2}`,padding:10,marginBottom:8}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('div',null,
+            productPhotos[e.prodId]&&h('img',{src:productPhotos[e.prodId],style:{width:32,height:32,borderRadius:6,objectFit:'cover',marginBottom:4}}),
+            h('div',{style:{fontWeight:700,fontSize:14}},`${e.prodId} – ${PROD_MAP[e.prodId]?.name}`),
+            h('div',{style:{fontSize:12,color:C.muted}},`${e.qty} ${e.unit} (${dispCartons(e.pcs,e.prodId)}) @ ﷼${e.costPerCarton}/ctn`),
+            e.suppName&&h('div',{style:{fontSize:11,color:C.muted2}},`Supplier: ${e.suppName}`),
+            h('div',{style:{fontSize:11,color:C.muted2}},`📅 ${e.date}`)
           ),
-          React.createElement("div",{style:{display:"flex",gap:6}},
-            React.createElement("button",{onClick:()=>setDebts(p=>p.map(x=>x.id===d.id?{...x,paid:true}:x)),style:{...S.iconBtn,background:"#166534"}},"✓"),
-            React.createElement("button",{onClick:()=>setDebts(p=>p.filter(x=>x.id!==d.id)),style:{...S.iconBtn,background:"#7f1d1d"}},"🗑️")
-          )
-        ),
-        exp&&React.createElement("div",{style:{marginTop:8}},
-          d.items.map((i,idx)=>React.createElement("div",{key:idx,style:{fontSize:12,color:"#9ca3af",padding:"4px 0",borderBottom:"1px solid #1f2937"}},
-            `${i.name} — ${i.qty} pcs × ﷼${i.price} = `,React.createElement("span",{style:{color:"#fb923c"}},`﷼${fmt(i.qty*i.price)}`)
-          ))
+          h('button',{onClick:()=>setStockEntries(p=>p.filter(x=>x.id!==e.id)),style:{...S.iconBtn,background:'#7f1d1d',color:'#fff'}},'🗑️')
         )
-      );
-    }),
-    paidDebts.length>0&&React.createElement("div",{style:S.card},
-      React.createElement("div",{style:{...S.cardTitle,color:"#6b7280"}},`✓ Cleared Debts (${paidDebts.length})`),
-      paidDebts.map(d=>{
-        const total=d.items.reduce((a,i)=>a+Number(i.qty)*Number(i.price),0);
-        return React.createElement("div",{key:d.id,style:{...S.row,opacity:0.5}},
-          React.createElement("div",null,
-            React.createElement("div",{style:{fontWeight:600,fontSize:14}},d.debtor),
-            React.createElement("div",{style:{fontSize:11,color:"#6b7280"}},d.date)
-          ),
-          React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},
-            React.createElement("span",{style:{color:"#4ade80"}},`﷼${fmt(total)}`),
-            React.createElement("button",{onClick:()=>setDebts(p=>p.filter(x=>x.id!==d.id)),style:{...S.iconBtn,background:"#374151"}},"🗑️")
-          )
-        );
-      })
-    )
-  );
-}
-
-// ══ SUMMARY PAGE ═════════════════════════════════════════════════════════════
-function SummaryPage({stock,removals,debts,setStock,setRemovals,setDebts}){
-  const [confirm,setConfirm]=useState(false);
-  const [backupMsg,setBackupMsg]=useState("");
-  const names=[...new Set([...stock.map(e=>e.name),...removals.map(e=>e.name)])];
-  const stats=names.map(name=>{
-    const entries=stock.filter(s=>s.name===name);
-    const rems=removals.filter(r=>r.name===name);
-    const tIn=entries.reduce((a,e)=>a+Number(e.pcs),0);
-    const tInV=entries.reduce((a,e)=>a+Number(e.pcs)*Number(e.price),0);
-    const tOut=rems.reduce((a,r)=>a+Number(r.pcs),0);
-    const tOutV=rems.reduce((a,r)=>a+Number(r.pcs)*Number(r.price),0);
-    const prices=[...new Map(entries.map(e=>[e.price,e])).values()].map(e=>e.price);
-    return{name,tIn,tInV,tOut,tOutV,current:tIn-tOut,prices,entries,rems};
-  });
-  const gIn=stats.reduce((a,i)=>a+i.tInV,0);
-  const gOut=stats.reduce((a,i)=>a+i.tOutV,0);
-  const debtTotal=debts.filter(d=>!d.paid).reduce((a,d)=>a+d.items.reduce((b,i)=>b+Number(i.qty)*Number(i.price),0),0);
-
-  // Export backup as JSON file
-  const exportData=()=>{
-    const data={stock,removals,debts,exported:new Date().toISOString()};
-    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");
-    a.href=url;
-    a.download=`stockmate-backup-${today()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setBackupMsg("✅ Backup saved! Store it safely.");
-    setTimeout(()=>setBackupMsg(""),3000);
-  };
-
-  // Import backup from JSON file
-  const importData=(e)=>{
-    const file=e.target.files[0];
-    if(!file)return;
-    const reader=new FileReader();
-    reader.onload=ev=>{
-      try{
-        const data=JSON.parse(ev.target.result);
-        if(data.stock&&data.removals&&data.debts){
-          setStock(data.stock);
-          setRemovals(data.removals);
-          setDebts(data.debts);
-          setBackupMsg("✅ Data restored successfully!");
-        }else{
-          setBackupMsg("❌ Invalid backup file.");
-        }
-      }catch{setBackupMsg("❌ Could not read file.");}
-      setTimeout(()=>setBackupMsg(""),3000);
-    };
-    reader.readAsText(file);
-    e.target.value="";
-  };
-
-  return React.createElement("div",{style:S.page},
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"📊 Full Summary"),
-      React.createElement(SumRow,{label:"Total Stock Entered",val:`﷼${fmt(gIn)}`,color:"#4ade80"}),
-      React.createElement(SumRow,{label:"Total Removed Value",val:`﷼${fmt(gOut)}`,color:"#f87171"}),
-      React.createElement(SumRow,{label:"Net Balance",val:`﷼${fmt(gIn-gOut)}`,color:"#818cf8"}),
-      React.createElement(SumRow,{label:"Open Debts",val:`﷼${fmt(debtTotal)}`,color:"#fb923c"}),
-      React.createElement(SumRow,{label:"Varieties",val:`${names.length} items`,color:"#67e8f9"})
-    ),
-    stats.map(item=>React.createElement("div",{key:item.name,style:S.card},
-      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}},
-        React.createElement("div",{style:S.cardTitle},item.name),
-        React.createElement("span",{style:{...S.badge,background:item.current<0?"#dc2626":"#166534"}},`${item.current} left`)
-      ),
-      React.createElement(SumRow,{label:"In",val:`${item.tIn} pcs / ﷼${fmt(item.tInV)}`,color:"#4ade80"}),
-      React.createElement(SumRow,{label:"Out",val:`${item.tOut} pcs / ﷼${fmt(item.tOutV)}`,color:"#f87171"}),
-      item.prices.length>1&&React.createElement("div",{style:{fontSize:11,color:"#fbbf24",marginTop:4}},`⚠️ Multiple prices: ${item.prices.map(p=>`﷼${p}`).join(", ")}`),
-      item.rems.length>0&&React.createElement("div",{style:{marginTop:6}},
-        React.createElement("div",{style:{fontSize:11,color:"#9ca3af",marginBottom:4}},"Removal variance:"),
-        item.rems.map((r,i)=>{
-          const avg=item.tInV/(item.tIn||1);
-          const v=Number(r.pcs)*Number(r.price)-Number(r.pcs)*avg;
-          return React.createElement("div",{key:i,style:{fontSize:11,color:"#9ca3af",padding:"3px 0",borderBottom:"1px solid #111827"}},
-            `${r.date}: ${r.pcs} ${r.unit} @ ﷼${r.price} → `,React.createElement("span",{style:{color:v>=0?"#4ade80":"#f87171"}},`${v>=0?"▲":"▼"} ﷼${fmt(Math.abs(v))}`)
-          );
-        })
-      )
-    )),
-    // Backup / Restore card
-    React.createElement("div",{style:{...S.card,borderColor:"#1d4ed8"}},
-      React.createElement("div",{style:S.cardTitle},"💾 Backup & Restore"),
-      React.createElement("div",{style:{fontSize:12,color:"#6b7280",marginBottom:10,lineHeight:1.5}},
-        "Export your data as a JSON file to keep it safe. Import it anytime to restore."
-      ),
-      backupMsg&&React.createElement("div",{style:{fontSize:13,color:backupMsg.startsWith("✅")?"#4ade80":"#f87171",marginBottom:8,fontWeight:600}},backupMsg),
-      React.createElement("button",{onClick:exportData,style:{...S.btnBlue,marginBottom:8}},"📤 Export Backup"),
-      React.createElement("label",{style:{...S.btnSmall,background:"#1e3a5f",display:"block",width:"100%",textAlign:"center",padding:"14px 12px",borderRadius:12,cursor:"pointer",fontSize:16,color:"#93c5fd",fontWeight:700}},
-        "📥 Import Backup",
-        React.createElement("input",{type:"file",accept:".json",onChange:importData,style:{display:"none"}})
-      )
-    ),
-    // Reset card
-    React.createElement("div",{style:S.card},
-      React.createElement("div",{style:S.cardTitle},"⚠️ Reset All Data"),
-      !confirm?React.createElement("button",{onClick:()=>setConfirm(true),style:{...S.btnSmall,background:"#7f1d1d",width:"100%",padding:14,fontSize:15}},"Reset Everything"):
-      React.createElement("div",null,
-        React.createElement("div",{style:{color:"#f87171",marginBottom:8,fontSize:13}},"Are you sure? This cannot be undone."),
-        React.createElement("div",{style:S.row2},
-          React.createElement("button",{onClick:()=>{setStock([]);setRemovals([]);setDebts([]);setConfirm(false);},style:{...S.btnSmall,background:"#dc2626"}},"Yes, Reset"),
-          React.createElement("button",{onClick:()=>setConfirm(false),style:{...S.btnSmall,background:"#374151"}},"Cancel")
-        )
-      )
-    )
-  );
-}
-
-// ══ APP ROOT ══════════════════════════════════════════════════════════════════
-function App(){
-  const [tab,setTab]=useState("Dashboard");
-  const [stock,setStock]=useState(()=>loadSync("sm_stock")||[]);
-  const [removals,setRemovals]=useState(()=>loadSync("sm_removals")||[]);
-  const [debts,setDebts]=useState(()=>loadSync("sm_debts")||[]);
-  const [loaded,setLoaded]=useState(false);
-
-  // Load from IndexedDB on mount (more persistent than localStorage on iOS)
-  useEffect(()=>{
-    Promise.all([idbGet("sm_stock"),idbGet("sm_removals"),idbGet("sm_debts")]).then(([s,r,d])=>{
-      if(s)setStock(s);
-      if(r)setRemovals(r);
-      if(d)setDebts(d);
-      setLoaded(true);
-    }).catch(()=>setLoaded(true));
-  },[]);
-
-  // Save to both storages on change
-  useEffect(()=>{if(loaded){saveSync("sm_stock",stock);idbSet("sm_stock",stock);}},[stock,loaded]);
-  useEffect(()=>{if(loaded){saveSync("sm_removals",removals);idbSet("sm_removals",removals);}},[removals,loaded]);
-  useEffect(()=>{if(loaded){saveSync("sm_debts",debts);idbSet("sm_debts",debts);}},[debts,loaded]);
-
-  return React.createElement("div",{id:"app-shell",style:{background:"#0a0a0f",height:"100%",height:"100dvh",color:"#f1f5f9",display:"flex",flexDirection:"column",maxWidth:430,margin:"0 auto",overflow:"hidden"}},
-    // Header
-    React.createElement("div",{style:S.header},
-      React.createElement("span",{style:S.logo},"📦 StockMate"),
-      React.createElement("span",{style:{fontSize:11,color:"#64748b"}},"Inventory Manager")
-    ),
-    // Content scroll area
-    React.createElement("div",{style:{flex:1,overflowY:"auto",WebkitOverflowScrolling:"touch",overscrollBehavior:"contain"}},
-      tab==="Dashboard"&&React.createElement(Dashboard,{stock,removals,debts}),
-      tab==="Stock"&&React.createElement(StockPage,{stock,setStock}),
-      tab==="Remove"&&React.createElement(RemovePage,{stock,removals,setRemovals}),
-      tab==="Debt"&&React.createElement(DebtPage,{debts,setDebts,stock,setRemovals}),
-      tab==="Summary"&&React.createElement(SummaryPage,{stock,removals,debts,setStock,setRemovals,setDebts})
-    ),
-    // Nav bar
-    React.createElement("nav",{style:S.nav},
-      TABS.map(t=>React.createElement("button",{key:t,onClick:()=>setTab(t),style:{...S.navBtn,color:tab===t?"#60a5fa":"#4b5563"}},
-        React.createElement("span",{style:{fontSize:20}},TAB_ICON[t]),
-        React.createElement("span",{style:{fontSize:9,fontWeight:600,letterSpacing:"0.5px"}},t)
       ))
     )
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+// ══ SALES PAGE ═══════════════════════════════════════════════════════════════
+function SalesPage({sales,setSales,customers,setCustomers,stockMap,getLastHighCost,stockEntries}){
+  const [custName,setCustName]=useState('');
+  const [selCust,setSelCust]=useState('');
+  const [items,setItems]=useState([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+  const [date,setDate]=useState(today());
+  const [paidAmt,setPaidAmt]=useState('');
+  const [showInv,setShowInv]=useState(null);
+  const [viewCust,setViewCust]=useState(null);
+
+  const custList=[...new Set(customers.map(c=>c.name))];
+
+  const addItem=()=>setItems(p=>[...p,{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+  const updItem=(id,f,v)=>setItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
+
+  const saveSale=()=>{
+    const cName=(selCust||custName).trim();
+    if(!cName)return alert('Enter customer name');
+    if(items.some(i=>!i.qty||!i.salePrice))return alert('Fill all item fields');
+
+    const saleItems=items.map(i=>{
+      const pcs=toPcs(i.qty,i.unit,i.prodId);
+      const ctns=pcs/PROD_MAP[i.prodId].cartonPcs;
+      const costPerCtn=getLastHighCost(i.prodId);
+      const totalCost=ctns*costPerCtn;
+      const saleTotal=ctns*Number(i.salePrice);
+      const grossProfit=saleTotal-totalCost;
+      const sProfit=grossProfit/2;
+      const nProfit=grossProfit/2;
+      return{...i,pcs,ctns,costPerCtn,totalCost,saleTotal,grossProfit,sProfit,nProfit};
+    });
+
+    const totalSale=saleItems.reduce((a,i)=>a+i.saleTotal,0);
+    const totalProfit=saleItems.reduce((a,i)=>a+i.grossProfit,0);
+    const paid=Number(paidAmt)||0;
+    const pending=totalSale-paid;
+
+    const saleId=uid();
+    const newSale={id:saleId,custName:cName,items:saleItems,date,totalSale,totalProfit,paid,pending,
+      sProfit:totalProfit/2,nProfit:totalProfit/2,createdAt:nowISO()};
+
+    setSales(p=>[...p,newSale]);
+
+    // Update customer record
+    setCustomers(p=>{
+      const existing=p.find(c=>c.name===cName);
+      if(existing){
+        return p.map(c=>c.name===cName?{...c,
+          totalSales:Number(c.totalSales||0)+totalSale,
+          totalProfit:Number(c.totalProfit||0)+totalProfit,
+          pendingAmt:Number(c.pendingAmt||0)+pending,
+          saleIds:[...(c.saleIds||[]),saleId]
+        }:c);
+      }
+      return [...p,{id:uid(),name:cName,totalSales:totalSale,totalProfit,pendingAmt:pending,saleIds:[saleId]}];
+    });
+
+    setShowInv(newSale);
+    setItems([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+    setPaidAmt('');setCustName('');setSelCust('');
+  };
+
+  // WhatsApp invoice share
+  const shareInvoice=(sale)=>{
+    let msg=`*StockMate Invoice*\n`;
+    msg+=`Customer: ${sale.custName}\n`;
+    msg+=`Date: ${sale.date}\n`;
+    msg+=`─────────────────\n`;
+    sale.items.forEach(i=>{
+      msg+=`${i.prodId}: ${i.ctns.toFixed(2)} ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}\n`;
+    });
+    msg+=`─────────────────\n`;
+    msg+=`Total: ﷼${fmt(sale.totalSale)}\n`;
+    msg+=`Paid: ﷼${fmt(sale.paid)}\n`;
+    if(sale.pending>0)msg+=`Pending: ﷼${fmt(sale.pending)}\n`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  // Auto-delete invoices older than 7 days (keep customer monthly totals)
+  const now=new Date();
+  const recentSales=sales.filter(s=>{
+    const d=new Date(s.createdAt||s.date);
+    return (now-d)<7*24*60*60*1000;
+  });
+
+  // 10-day customer history
+  const tenDaysAgo=new Date(now-10*24*60*60*1000).toISOString().slice(0,10);
+
+  return h('div',{style:S.page},
+    // New sale form
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'💰 New Sale'),
+      custList.length>0&&h(Sel,{label:'Select Customer',value:selCust,onChange:setSelCust,
+        options:[{v:'',l:'— New Customer —'},...custList.map(c=>({v:c,l:c}))]}),
+      !selCust&&h(Inp,{label:'New Customer Name',value:custName,onChange:setCustName,placeholder:'Short name'}),
+      h('label',{style:S.lbl},'Date'),
+      h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+      items.map((item,idx)=>h('div',{key:item.id,style:{...S.card,background:C.bg3,marginBottom:6}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:C.orange,marginBottom:6}},`Item ${idx+1}`),
+        h(Sel,{label:'Product',value:item.prodId,onChange:v=>updItem(item.id,'prodId',v),
+          options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+        h('div',{style:S.row2},
+          h(Inp,{label:'Qty',value:item.qty,onChange:v=>updItem(item.id,'qty',v),type:'number',half:true}),
+          h(Sel,{label:'Unit',value:item.unit,onChange:v=>updItem(item.id,'unit',v),options:UNITS,half:true})
+        ),
+        item.qty&&item.unit&&h('div',{style:{fontSize:11,color:C.cyan,marginBottom:6}},
+          `= ${(toPcs(item.qty,item.unit,item.prodId)/PROD_MAP[item.prodId].cartonPcs).toFixed(2)} cartons`
+        ),
+        h(Inp,{label:'Sale Price per Carton (﷼)',value:item.salePrice,onChange:v=>updItem(item.id,'salePrice',v),type:'number'}),
+        items.length>1&&h('button',{onClick:()=>setItems(p=>p.filter(i=>i.id!==item.id)),
+          style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',padding:'8px',fontSize:13,marginTop:4}},'Remove item')
+      )),
+      h('button',{onClick:addItem,style:{...S.btn,background:'#1e3a5f',color:C.blue,marginBottom:8,padding:'10px'}},'+ Add Item'),
+      h(Inp,{label:'Amount Paid Now (﷼)',value:paidAmt,onChange:setPaidAmt,type:'number',placeholder:'0'}),
+      h(Btn,{label:'💾 Save Sale',onClick:saveSale,color:'#1d4ed8',text:C.blue})
+    ),
+
+    // Invoice popup
+    showInv&&h('div',{style:{...S.card,borderColor:C.green}},
+      h('div',{style:{...S.cardT,color:C.green}},'✅ Sale Saved — Invoice'),
+      h('div',{style:{fontSize:13,color:C.muted,marginBottom:6}},`${showInv.custName} | ${showInv.date}`),
+      showInv.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},
+        `${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}`
+      )),
+      h('div',{style:{marginTop:6}},
+        h(SumRow,{label:'Total',val:`﷼${fmt(showInv.totalSale)}`,color:C.green}),
+        h(SumRow,{label:'Paid',val:`﷼${fmt(showInv.paid)}`,color:C.blue}),
+        showInv.pending>0&&h(SumRow,{label:'Pending',val:`﷼${fmt(showInv.pending)}`,color:C.orange})
+      ),
+      h('div',{style:{display:'flex',gap:8,marginTop:8}},
+        h('button',{onClick:()=>shareInvoice(showInv),style:{...S.btnSm,background:'#166534',color:C.green}},'📤 WhatsApp'),
+        h('button',{onClick:()=>setShowInv(null),style:{...S.btnSm,background:C.muted3,color:'#fff'}},'Close')
+      )
+    ),
+
+    // Customer list
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'👥 Customers'),
+      customers.length===0&&h('div',{style:S.empty},'No customers yet'),
+      customers.map(c=>h('div',{key:c.id,style:{background:C.bg3,borderRadius:10,border:`1px solid ${C.border2}`,padding:10,marginBottom:8,cursor:'pointer'},onClick:()=>setViewCust(viewCust===c.name?null:c.name)},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('div',null,
+            h('div',{style:{fontWeight:700,fontSize:14}},`${c.name} ${viewCust===c.name?'▲':'▼'}`),
+            h('div',{style:{fontSize:12,color:C.muted}},`Sales: ﷼${fmt(c.totalSales)} | ${c.pendingAmt>0?'⚠️ Pending: ﷼'+fmt(c.pendingAmt):'✅ Clear'}`)
+          ),
+          h('div',{style:{display:'flex',gap:6}},
+            c.pendingAmt>0&&h('button',{onClick:e=>{e.stopPropagation();setCustomers(p=>p.map(x=>x.name===c.name?{...x,pendingAmt:0}:x))},
+              style:{...S.iconBtn,background:'#166534',color:'#fff',fontSize:12}},'Paid'),
+            h('button',{onClick:e=>{e.stopPropagation();setCustomers(p=>p.filter(x=>x.name!==c.name))},
+              style:{...S.iconBtn,background:'#7f1d1d',color:'#fff'}},'🗑️')
+          )
+        ),
+        // Expanded: 10-day history
+        viewCust===c.name&&h('div',{style:{marginTop:8}},
+          h('div',{style:{fontSize:11,color:C.muted,marginBottom:6}},'Last 10 days sales:'),
+          recentSales.filter(s=>s.custName===c.name&&s.date>=tenDaysAgo).length===0&&
+            h('div',{style:S.empty},'No sales in last 10 days'),
+          recentSales.filter(s=>s.custName===c.name&&s.date>=tenDaysAgo).map(s=>h('div',{key:s.id,style:{fontSize:12,color:'#9ca3af',padding:'4px 0',borderBottom:`1px solid ${C.bg3}`}},
+            h('div',null,`📅 ${s.date} — ﷼${fmt(s.totalSale)}`),
+            s.items.map((i,idx)=>h('div',{key:idx,style:{paddingLeft:8,fontSize:11}},
+              `${i.prodId}: ${i.ctns.toFixed(2)}ctn`
+            )),
+            s.pending>0&&h('div',{style:{color:C.orange,fontSize:11}},`Pending: ﷼${fmt(s.pending)}`)
+          ))
+        )
+      ))
+    )
+  );
+}
+
+// ══ SUPPLY PAGE ══════════════════════════════════════════════════════════════
+function SupplyPage({suppliers,setSuppliers,supplyTx,setSupplyTx}){
+  const [showNewSupp,setShowNewSupp]=useState(false);
+  const [suppName,setSuppName]=useState('');
+  const [showTx,setShowTx]=useState(false);
+  const [txSupp,setTxSupp]=useState('');
+  const [txAmt,setTxAmt]=useState('');
+  const [txNote,setTxNote]=useState('');
+  const [txDate,setTxDate]=useState(today());
+  const [txType,setTxType]=useState('credit'); // credit=we owe them, debit=they owe us
+  const [viewSupp,setViewSupp]=useState(null);
+
+  const addSupplier=()=>{
+    if(!suppName.trim())return alert('Enter supplier name');
+    setSuppliers(p=>[...p,{id:uid(),name:suppName.trim(),balance:0}]);
+    setSuppName('');setShowNewSupp(false);
+  };
+
+  const addTx=()=>{
+    if(!txSupp||!txAmt)return alert('Select supplier and enter amount');
+    const amt=Number(txAmt);
+    const tx={id:uid(),suppName:txSupp,amount:amt,type:txType,note:txNote,date:txDate,paid:false};
+    setSupplyTx(p=>[...p,tx]);
+    // Update supplier balance
+    setSuppliers(p=>p.map(s=>s.name===txSupp?{...s,balance:Number(s.balance||0)+(txType==='credit'?amt:-amt)}:s));
+    setTxAmt('');setTxNote('');setShowTx(false);
+  };
+
+  return h('div',{style:S.page},
+    h('div',{style:{display:'flex',gap:8}},
+      h('button',{onClick:()=>setShowNewSupp(s=>!s),style:{...S.btn,background:'#1e3a5f',color:C.blue,flex:1}},showNewSupp?'✕ Cancel':'+ New Supplier'),
+      h('button',{onClick:()=>setShowTx(s=>!s),style:{...S.btn,background:'#78350f',color:C.orange,flex:1}},showTx?'✕ Cancel':'+ Transaction')
+    ),
+    showNewSupp&&h('div',{style:S.card},
+      h('div',{style:S.cardT},'New Supplier'),
+      h(Inp,{label:'Supplier Name',value:suppName,onChange:setSuppName,placeholder:'e.g. Ahmed Traders'}),
+      h(Btn,{label:'Save Supplier',onClick:addSupplier,color:'#1e3a5f',text:C.blue})
+    ),
+    showTx&&h('div',{style:S.card},
+      h('div',{style:S.cardT},'New Transaction'),
+      h(Sel,{label:'Supplier',value:txSupp,onChange:setTxSupp,
+        options:[{v:'',l:'— Select —'},...suppliers.map(s=>({v:s.name,l:s.name}))]}),
+      h(Sel,{label:'Type',value:txType,onChange:setTxType,
+        options:[{v:'credit',l:'Credit (We owe them)'},{v:'debit',l:'Debit (They owe us)'},{v:'payment',l:'Payment Made'}]}),
+      h(Inp,{label:'Amount (﷼)',value:txAmt,onChange:setTxAmt,type:'number'}),
+      h(Inp,{label:'Note',value:txNote,onChange:setTxNote,placeholder:'Optional note'}),
+      h('label',{style:S.lbl},'Date'),
+      h('input',{type:'date',value:txDate,onChange:e=>setTxDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+      h(Btn,{label:'Save Transaction',onClick:addTx,color:'#78350f',text:C.orange})
+    ),
+    suppliers.length===0&&h('div',{style:{...S.card,...S.empty}},'No suppliers added'),
+    suppliers.map(s=>{
+      const txs=supplyTx.filter(t=>t.suppName===s.name);
+      const totalCredit=txs.filter(t=>t.type==='credit').reduce((a,t)=>a+t.amount,0);
+      const totalPaid=txs.filter(t=>t.type==='payment').reduce((a,t)=>a+t.amount,0);
+      const balance=totalCredit-totalPaid;
+      return h('div',{key:s.id,style:{...S.card,marginBottom:0,borderColor:balance>0?C.orange:C.green},onClick:()=>setViewSupp(viewSupp===s.name?null:s.name)},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('div',null,
+            h('div',{style:{fontWeight:700,fontSize:15}},`${s.name} ${viewSupp===s.name?'▲':'▼'}`),
+            h('div',{style:{fontSize:12,color:balance>0?C.orange:C.green}},balance>0?`Pending to pay: ﷼${fmt(balance)}`:'✅ Clear')
+          ),
+          h('button',{onClick:e=>{e.stopPropagation();setSuppliers(p=>p.filter(x=>x.name!==s.name))},
+            style:{...S.iconBtn,background:'#7f1d1d',color:'#fff'}},'🗑️')
+        ),
+        viewSupp===s.name&&h('div',{style:{marginTop:8}},
+          h(SumRow,{label:'Total Credit',val:`﷼${fmt(totalCredit)}`,color:C.red}),
+          h(SumRow,{label:'Total Paid',val:`﷼${fmt(totalPaid)}`,color:C.green}),
+          h(SumRow,{label:'Balance Due',val:`﷼${fmt(balance)}`,color:balance>0?C.orange:C.green}),
+          h('div',{style:{marginTop:8}},
+            txs.length===0&&h('div',{style:S.empty},'No transactions'),
+            [...txs].reverse().map(t=>h('div',{key:t.id,style:{fontSize:12,padding:'4px 0',borderBottom:`1px solid ${C.bg3}`,display:'flex',justifyContent:'space-between'}},
+              h('span',{style:{color:C.muted}},`${t.date} ${t.type}`),
+              h('span',{style:{color:t.type==='payment'?C.green:C.orange}},`﷼${fmt(t.amount)}`)
+            ))
+          )
+        )
+      );
+    })
+  );
+}
+
+// ══ REPORT PAGE ══════════════════════════════════════════════════════════════
+function ReportPage({sales,stockEntries,customers,supplyTx,suppliers,stockMap,getLastHighCost}){
+  const [pass,setPass]=useState('');
+  const [unlocked,setUnlocked]=useState(false);
+  const [passErr,setPassErr]=useState(false);
+  const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
+  const [shareMode,setShareMode]=useState(false);
+
+  const tryUnlock=()=>{
+    if(pass===PASS){setUnlocked(true);setPassErr(false)}
+    else{setPassErr(true);setPass('')}
+  };
+
+  // Monthly filter
+  const mSales=sales.filter(s=>s.date&&s.date.startsWith(month));
+  const totalSalesVal=mSales.reduce((a,s)=>a+Number(s.totalSale),0);
+  const totalProfit=mSales.reduce((a,s)=>a+Number(s.totalProfit||0),0);
+  const sProfit=totalProfit/2;
+  const nProfit=totalProfit/2;
+  const totalPending=customers.reduce((a,c)=>a+Number(c.pendingAmt||0),0);
+
+  // Product breakdown
+  const prodBreak=PRODUCTS.map(p=>{
+    const ps=mSales.flatMap(s=>s.items.filter(i=>i.prodId===p.id));
+    const ctns=ps.reduce((a,i)=>a+Number(i.ctns||0),0);
+    const val=ps.reduce((a,i)=>a+Number(i.saleTotal||0),0);
+    const profit=ps.reduce((a,i)=>a+Number(i.grossProfit||0),0);
+    return{...p,ctns,val,profit};
+  }).filter(p=>p.ctns>0);
+
+  const shareReport=()=>{
+    let msg=`*StockMate Monthly Report*\n`;
+    msg+=`Month: ${month}\n─────────────────\n`;
+    msg+=`Total Sales: ﷼${fmt(totalSalesVal)}\n`;
+    prodBreak.forEach(p=>{msg+=`${p.id}: ${p.ctns.toFixed(2)}ctn = ﷼${fmt(p.val)}\n`});
+    if(unlocked){
+      msg+=`─────────────────\n`;
+      msg+=`Total Profit: ﷼${fmt(totalProfit)}\n`;
+      msg+=`Sinu: ﷼${fmt(sProfit)} | Natru: ﷼${fmt(nProfit)}\n`;
+    }
+    msg+=`Pending: ﷼${fmt(totalPending)}\n`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  return h('div',{style:S.page},
+    // Month selector
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'📊 Monthly Report'),
+      h('label',{style:S.lbl},'Select Month'),
+      h('input',{type:'month',value:month,onChange:e=>setMonth(e.target.value),style:{...S.inp,marginBottom:0}})
+    ),
+
+    // Public stats (always visible)
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'Sales Summary'),
+      h(SumRow,{label:'Total Sales',val:`﷼${fmt(totalSalesVal)}`,color:C.green}),
+      h(SumRow,{label:'Invoices',val:`${mSales.length}`,color:C.blue}),
+      h(SumRow,{label:'Customer Pending',val:`﷼${fmt(totalPending)}`,color:C.orange})
+    ),
+
+    // Product breakdown
+    prodBreak.length>0&&h('div',{style:S.card},
+      h('div',{style:S.cardT},'Product Breakdown'),
+      prodBreak.map(p=>h('div',{key:p.id,style:S.row},
+        h('span',{style:{fontSize:13,fontWeight:600}},`${p.id} – ${p.name}`),
+        h('div',{style:{textAlign:'right'}},
+          h('div',{style:{fontSize:12,color:C.green}},`${p.ctns.toFixed(2)} ctn`),
+          h('div',{style:{fontSize:11,color:C.muted}},`﷼${fmt(p.val)}`)
+        )
+      ))
+    ),
+
+    // Profit section — password protected
+    !unlocked?h('div',{style:{...S.card,borderColor:'#4c1d95'}},
+      h('div',{style:{...S.cardT,color:C.purple}},'🔐 Profit Report (Private)'),
+      h('div',{style:{fontSize:12,color:C.muted,marginBottom:8}},'Enter password to view profit details'),
+      h(Inp,{label:'Password',value:pass,onChange:setPass,type:'password',placeholder:'Enter password'}),
+      passErr&&h('div',{style:{color:C.red,fontSize:12,marginBottom:6}},'❌ Wrong password'),
+      h(Btn,{label:'Unlock',onClick:tryUnlock,color:'#4c1d95',text:C.purple})
+    ):
+    h('div',{style:{...S.card,borderColor:C.purple}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:{...S.cardT,color:C.purple,marginBottom:0}},'🔓 Profit Report'),
+        h('button',{onClick:()=>setUnlocked(false),style:{...S.iconBtn,background:'#4c1d95',color:'#fff',fontSize:12}},'Lock')
+      ),
+      h(SumRow,{label:'Total Gross Profit',val:`﷼${fmt(totalProfit)}`,color:C.purple}),
+      h(SumRow,{label:'Sinu Share (50%)',val:`﷼${fmt(sProfit)}`,color:C.cyan}),
+      h(SumRow,{label:'Natru Share (50%)',val:`﷼${fmt(nProfit)}`,color:C.yellow}),
+      h('div',{style:{marginTop:10}},
+        h(Btn,{label:'📤 Share via WhatsApp',onClick:shareReport,color:'#166534',text:C.green})
+      )
+    ),
+
+    // Supplier balance (hidden unless unlocked)
+    unlocked&&h('div',{style:{...S.card,borderColor:C.orange}},
+      h('div',{style:{...S.cardT,color:C.orange}},'🚚 Supplier Balances'),
+      suppliers.length===0&&h('div',{style:S.empty},'No suppliers'),
+      suppliers.map(s=>{
+        const txs=supplyTx.filter(t=>t.suppName===s.name);
+        const credit=txs.filter(t=>t.type==='credit').reduce((a,t)=>a+t.amount,0);
+        const paid=txs.filter(t=>t.type==='payment').reduce((a,t)=>a+t.amount,0);
+        const bal=credit-paid;
+        return h('div',{key:s.id,style:S.row},
+          h('span',{style:{fontSize:13,fontWeight:600}},s.name),
+          h('span',{style:{color:bal>0?C.orange:C.green,fontWeight:700}},`﷼${fmt(Math.abs(bal))} ${bal>0?'owed':'clear'}`)
+        );
+      })
+    ),
+
+    // Export/Import
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'💾 Backup'),
+      h(Btn,{label:'📤 Export Backup',onClick:()=>{
+        const d={stockEntries:window._smStock,sales:window._smSales,suppliers:window._smSupp,
+          supplyTx:window._smTx,customers:window._smCust,productPhotos:window._smPhotos,
+          exported:new Date().toISOString()};
+        const b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+        const u=URL.createObjectURL(b);
+        const a=document.createElement('a');a.href=u;a.download=`stockmate-${today()}.json`;a.click();
+        URL.revokeObjectURL(u);
+      },color:'#1e3a5f',text:C.blue})
+    )
+  );
+}
+
+// Mount
+ReactDOM.createRoot(document.getElementById('root')).render(h(App,null));
 </script>
 </body>
 </html>
