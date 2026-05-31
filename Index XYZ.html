@@ -1,0 +1,1254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="StockMate Pro"/>
+<meta name="theme-color" content="#0a0a0f"/>
+<title>StockMate Pro</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:#0a0a0f}
+body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;color:#f1f5f9;overscroll-behavior:none;-webkit-user-select:none;user-select:none}
+input,textarea,select{-webkit-user-select:text;user-select:text}
+#root{width:100%;max-width:430px;margin:0 auto;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+input,select,button{font-family:inherit;font-size:16px!important}
+input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+input[type=date],input[type=month]{color-scheme:dark}
+.scrollable{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>
+const {useState,useEffect,useRef,useCallback}=React;
+const h=React.createElement;
+
+// ── CONSTANTS ────────────────────────────────────────────────────────────────
+const ROLES={'1989':{name:'X',role:'x'},'1234':{name:'Y',role:'y'}};
+const PRODUCTS=[
+  {id:'HB',  name:'HB',               sheetPcs:2,cartonPcs:12},
+  {id:'PP',  name:'Piper',            sheetPcs:3,cartonPcs:12},
+  {id:'KSB', name:'KR Sticker Blue',  sheetPcs:2,cartonPcs:12},
+  {id:'KSR', name:'KR Sticker Red',   sheetPcs:2,cartonPcs:12},
+  {id:'KIB', name:'KR Inner Blue',    sheetPcs:1,cartonPcs:12},
+  {id:'KIR', name:'KR Inner Red',     sheetPcs:1,cartonPcs:12},
+  {id:'HC',  name:'High Commissioner',sheetPcs:2,cartonPcs:12},
+  {id:'KAL', name:'Kalinska',         sheetPcs:2,cartonPcs:12},
+  {id:'GUN', name:'Major Gun',        sheetPcs:2,cartonPcs:12},
+];
+const PROD_MAP=Object.fromEntries(PRODUCTS.map(p=>[p.id,p]));
+const UNITS=['pcs','sheet','carton'];
+const LOW=12;
+
+// ── STORAGE ──────────────────────────────────────────────────────────────────
+let _db=null;
+function openDB(){
+  if(_db)return Promise.resolve(_db);
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open('sm4',1);
+    r.onupgradeneeded=e=>e.target.result.createObjectStore('kv');
+    r.onsuccess=e=>{_db=e.target.result;res(_db)};
+    r.onerror=()=>rej(r.error);
+  });
+}
+async function dbGet(k){
+  try{const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction('kv','readonly');const rq=tx.objectStore('kv').get(k);rq.onsuccess=()=>res(rq.result??null);rq.onerror=()=>rej(rq.error)});}
+  catch{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}}
+}
+async function dbSet(k,v){
+  try{const db=await openDB();return new Promise((res,rej)=>{const tx=db.transaction('kv','readwrite');tx.objectStore('kv').put(v,k);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)});}
+  catch{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
+}
+function lsGet(k){try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}}
+function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+const uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36);
+const fmt=n=>Number(n||0).toFixed(2);
+const today=()=>new Date().toISOString().slice(0,10);
+const nowISO=()=>new Date().toISOString();
+function toPcs(qty,unit,prodId){
+  const p=PROD_MAP[prodId];if(!p)return Number(qty)||0;
+  const q=Number(qty)||0;
+  if(unit==='sheet')return q*p.sheetPcs;
+  if(unit==='carton')return q*p.cartonPcs;
+  return q;
+}
+function toCtns(pcs,prodId){const p=PROD_MAP[prodId];return p?pcs/p.cartonPcs:pcs;}
+function dispCtns(pcs,prodId){const c=toCtns(pcs,prodId);return(Number.isInteger(c)?c:c.toFixed(2))+'ctn';}
+
+// ── COLORS & STYLES ──────────────────────────────────────────────────────────
+const C={bg:'#0a0a0f',bg2:'#0f172a',bg3:'#111827',border:'#1e293b',border2:'#1f2937',
+  green:'#4ade80',red:'#f87171',orange:'#fb923c',blue:'#60a5fa',
+  purple:'#a78bfa',yellow:'#fbbf24',cyan:'#67e8f9',muted:'#6b7280',muted2:'#4b5563',muted3:'#374151'};
+const S={
+  page:{padding:12,display:'flex',flexDirection:'column',gap:10,paddingBottom:80},
+  card:{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:16,padding:14},
+  cardT:{fontSize:13,fontWeight:700,color:C.blue,marginBottom:10},
+  grid2:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8},
+  row:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:`1px solid ${C.bg3}`},
+  row2:{display:'flex',gap:8,marginBottom:8},
+  lbl:{fontSize:12,color:C.muted,fontWeight:600,display:'block',marginBottom:4},
+  inp:{width:'100%',background:'#1e293b',border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:'#f1f5f9',outline:'none',WebkitAppearance:'none'},
+  sel:{width:'100%',background:'#1e293b',border:`1px solid ${C.border}`,borderRadius:10,padding:'10px 12px',color:'#f1f5f9',outline:'none',WebkitAppearance:'none'},
+  btn:{border:'none',borderRadius:12,padding:'13px 14px',fontWeight:700,cursor:'pointer',width:'100%',marginTop:4},
+  btnSm:{border:'none',borderRadius:10,padding:'9px 12px',fontWeight:600,cursor:'pointer',flex:1},
+  iconBtn:{border:'none',borderRadius:8,padding:'7px 10px',fontSize:14,cursor:'pointer',minWidth:34,minHeight:34,display:'flex',alignItems:'center',justifyContent:'center'},
+  badge:{fontSize:11,fontWeight:700,borderRadius:8,padding:'3px 8px'},
+  empty:{color:C.muted3,fontSize:13,textAlign:'center',padding:'14px 0'},
+  kpi:{background:C.bg2,border:'1px solid',borderRadius:14,padding:'12px 10px',display:'flex',flexDirection:'column',gap:3},
+};
+
+// ── UI COMPONENTS ─────────────────────────────────────────────────────────────
+function Inp({label,value,onChange,type='text',placeholder='',half,disabled,ro}){
+  return h('div',{style:{marginBottom:8,flex:half?1:undefined}},
+    label&&h('label',{style:S.lbl},label),
+    h('input',{type,value:value??'',onChange:e=>onChange&&onChange(e.target.value),placeholder,
+      disabled:disabled||ro,readOnly:ro,inputMode:type==='number'?'decimal':'text',
+      style:{...S.inp,opacity:(disabled||ro)?0.6:1},autoComplete:'off',autoCorrect:'off',autoCapitalize:'none'})
+  );
+}
+function Sel({label,value,onChange,options,half,disabled}){
+  return h('div',{style:{marginBottom:8,flex:half?1:undefined}},
+    label&&h('label',{style:S.lbl},label),
+    h('select',{value:value??'',onChange:e=>onChange&&onChange(e.target.value),disabled,
+      style:{...S.sel,opacity:disabled?0.6:1}},
+      options.map(o=>h('option',{key:o.v??o,value:o.v??o},o.l??o))
+    )
+  );
+}
+function KpiCard({label,value,color,icon}){
+  return h('div',{style:{...S.kpi,borderColor:color}},
+    h('span',{style:{fontSize:18}},icon),
+    h('span',{style:{fontSize:15,fontWeight:800,color}},value),
+    h('span',{style:{fontSize:10,color:C.muted,lineHeight:1.3}},label)
+  );
+}
+function SumRow({label,val,color='#f1f5f9',bold}){
+  return h('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid ${C.bg3}`}},
+    h('span',{style:{color:C.muted,fontSize:13}},label),
+    h('span',{style:{color,fontWeight:bold?800:700,fontSize:13}},val)
+  );
+}
+function Modal({title,onClose,children}){
+  return h('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:500,display:'flex',alignItems:'flex-end',justifyContent:'center'},onClick:e=>{if(e.target===e.currentTarget)onClose()}},
+    h('div',{style:{background:C.bg2,borderRadius:'20px 20px 0 0',width:'100%',maxWidth:430,maxHeight:'90dvh',overflow:'auto',padding:16,paddingBottom:'calc(16px + env(safe-area-inset-bottom))'}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14}},
+        h('div',{style:{fontWeight:800,fontSize:16,color:C.blue}},title),
+        h('button',{onClick:onClose,style:{...S.iconBtn,background:C.muted3,color:'#fff'}},'✕')
+      ),
+      children
+    )
+  );
+}
+
+// ══ LOGIN ═════════════════════════════════════════════════════════════════════
+function LoginScreen({onLogin}){
+  const [pass,setPass]=useState('');
+  const [err,setErr]=useState(false);
+  const tryLogin=(p)=>{
+    const r=ROLES[p||pass];
+    if(r){onLogin(r)}else{setErr(true);setPass('')}
+  };
+  return h('div',{style:{height:'100dvh',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:C.bg,padding:24}},
+    h('div',{style:{fontSize:52,marginBottom:8}},'📦'),
+    h('div',{style:{fontSize:24,fontWeight:800,marginBottom:4}},'StockMate Pro'),
+    h('div',{style:{fontSize:13,color:C.muted,marginBottom:32}},'Business Management'),
+    h('div',{style:{width:'100%',maxWidth:320}},
+      h('input',{type:'password',value:pass,onChange:e=>setPass(e.target.value),
+        placeholder:'Enter password',style:{...S.inp,textAlign:'center',marginBottom:8,fontSize:'18px!important'},
+        onKeyDown:e=>e.key==='Enter'&&tryLogin(),autoComplete:'off'}),
+      err&&h('div',{style:{color:C.red,fontSize:12,textAlign:'center',marginBottom:8}},'❌ Wrong password'),
+      h('button',{onClick:()=>tryLogin(),style:{...S.btn,background:'#1d4ed8',color:C.blue}},'Login'),
+      h('div',{style:{textAlign:'center',marginTop:12}},
+        h('button',{onClick:()=>onLogin({name:'Z',role:'z'}),style:{background:'none',border:`1px solid ${C.border}`,borderRadius:10,padding:'8px 20px',color:C.muted,cursor:'pointer',fontSize:13}},'👁 View as Z (No Password)')
+      )
+    )
+  );
+}
+
+// ══ ROOT APP ══════════════════════════════════════════════════════════════════
+function App(){
+  const [user,setUser]=useState(null);
+  const [loaded,setLoaded]=useState(false);
+
+  // All data
+  const [stockEntries,setStockEntries]=useState(()=>lsGet('sm4_stock')||[]);
+  const [sales,setSales]=useState(()=>lsGet('sm4_sales')||[]);
+  const [pendingSales,setPendingSales]=useState(()=>lsGet('sm4_pending')||[]);
+  const [approvedSales,setApprovedSales]=useState(()=>lsGet('sm4_approved')||[]);
+  const [suppliers,setSuppliers]=useState(()=>lsGet('sm4_supp')||[]);
+  const [supplyTx,setSupplyTx]=useState(()=>lsGet('sm4_stx')||[]);
+  const [customers,setCustomers]=useState(()=>lsGet('sm4_cust')||[]);
+  const [photos,setPhotos]=useState(()=>lsGet('sm4_photos')||{});
+  const [quotes,setQuotes]=useState(()=>lsGet('sm4_quotes')||[]);
+  const [purchaseInvs,setPurchaseInvs]=useState(()=>lsGet('sm4_pinvs')||[]);
+  const [hiddenTxIds,setHiddenTxIds]=useState(()=>lsGet('sm4_hidden')||[]);
+  const [yAuth,setYAuth]=useState(()=>lsGet('sm4_yauth')||{costPrice:false,currentPrice:false,remainQty:false});
+  const [invoiceCounter,setInvoiceCounter]=useState(()=>lsGet('sm4_invcount')||1);
+  const [notifications,setNotifications]=useState(()=>lsGet('sm4_notifs')||[]);
+
+  useEffect(()=>{
+    Promise.all([
+      dbGet('sm4_stock'),dbGet('sm4_sales'),dbGet('sm4_pending'),dbGet('sm4_approved'),
+      dbGet('sm4_supp'),dbGet('sm4_stx'),dbGet('sm4_cust'),dbGet('sm4_photos'),
+      dbGet('sm4_quotes'),dbGet('sm4_pinvs'),dbGet('sm4_hidden'),dbGet('sm4_yauth'),
+      dbGet('sm4_invcount'),dbGet('sm4_notifs')
+    ]).then(([st,sa,pe,ap,su,tx,cu,ph,qu,pi,hi,ya,ic,no])=>{
+      if(st)setStockEntries(st);if(sa)setSales(sa);if(pe)setPendingSales(pe);
+      if(ap)setApprovedSales(ap);if(su)setSuppliers(su);if(tx)setSupplyTx(tx);
+      if(cu)setCustomers(cu);if(ph)setPhotos(ph);if(qu)setQuotes(qu);
+      if(pi)setPurchaseInvs(pi);if(hi)setHiddenTxIds(hi);if(ya)setYAuth(ya);
+      if(ic)setInvoiceCounter(ic);if(no)setNotifications(no);
+      setLoaded(true);
+    }).catch(()=>setLoaded(true));
+  },[]);
+
+  const persist=(k,v,setter)=>{lsSet(k,v);dbSet(k,v);setter(v);};
+
+  useEffect(()=>{if(loaded){lsSet('sm4_stock',stockEntries);dbSet('sm4_stock',stockEntries)}},[stockEntries,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_sales',sales);dbSet('sm4_sales',sales)}},[sales,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_pending',pendingSales);dbSet('sm4_pending',pendingSales)}},[pendingSales,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_approved',approvedSales);dbSet('sm4_approved',approvedSales)}},[approvedSales,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_supp',suppliers);dbSet('sm4_supp',suppliers)}},[suppliers,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_stx',supplyTx);dbSet('sm4_stx',supplyTx)}},[supplyTx,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_cust',customers);dbSet('sm4_cust',customers)}},[customers,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_photos',photos);dbSet('sm4_photos',photos)}},[photos,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_quotes',quotes);dbSet('sm4_quotes',quotes)}},[quotes,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_pinvs',purchaseInvs);dbSet('sm4_pinvs',purchaseInvs)}},[purchaseInvs,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_hidden',hiddenTxIds);dbSet('sm4_hidden',hiddenTxIds)}},[hiddenTxIds,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_yauth',yAuth);dbSet('sm4_yauth',yAuth)}},[yAuth,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_invcount',invoiceCounter);dbSet('sm4_invcount',invoiceCounter)}},[invoiceCounter,loaded]);
+  useEffect(()=>{if(loaded){lsSet('sm4_notifs',notifications);dbSet('sm4_notifs',notifications)}},[notifications,loaded]);
+
+  // Next invoice number
+  const nextInvNo=()=>{
+    const n=invoiceCounter;
+    setInvoiceCounter(p=>p+1);
+    return String(n).padStart(3,'0');
+  };
+
+  // Get last highest cost per carton for product
+  const getLastHighCost=(prodId)=>{
+    const e=stockEntries.filter(x=>x.prodId===prodId);
+    if(!e.length)return 0;
+    return Math.max(...e.map(x=>Number(x.costPerCarton)||0));
+  };
+
+  // Compute REAL stock map (X sees this)
+  const getRealStockMap=()=>{
+    const m={};
+    PRODUCTS.forEach(p=>{m[p.id]={totalPcs:0,layers:[],photo:photos[p.id]||''}});
+    stockEntries.forEach(e=>{
+      if(!m[e.prodId])return;
+      const pcs=Number(e.pcs)||toPcs(e.qty,e.unit,e.prodId);
+      const cpp=Number(e.costPerCarton)/(PROD_MAP[e.prodId]?.cartonPcs||12);
+      m[e.prodId].totalPcs+=pcs;
+      m[e.prodId].layers.push({pcs,cpp,costPerCarton:Number(e.costPerCarton),date:e.date});
+    });
+    [...sales,...approvedSales].forEach(s=>{
+      (s.items||[]).forEach(i=>{
+        if(m[i.prodId])m[i.prodId].totalPcs-=Number(i.pcs)||0;
+      });
+    });
+    return m;
+  };
+
+  // Compute SHOWN stock map (Y and Z see this — hidden tx excluded)
+  const getShownStockMap=()=>{
+    const m={};
+    PRODUCTS.forEach(p=>{m[p.id]={totalPcs:0,layers:[],photo:photos[p.id]||''}});
+    stockEntries.filter(e=>!hiddenTxIds.includes(e.id)).forEach(e=>{
+      if(!m[e.prodId])return;
+      const pcs=Number(e.pcs)||toPcs(e.qty,e.unit,e.prodId);
+      const cpp=Number(e.costPerCarton)/(PROD_MAP[e.prodId]?.cartonPcs||12);
+      m[e.prodId].totalPcs+=pcs;
+      m[e.prodId].layers.push({pcs,cpp,costPerCarton:Number(e.costPerCarton),date:e.date});
+    });
+    [...sales,...approvedSales].filter(s=>!hiddenTxIds.includes(s.id)).forEach(s=>{
+      (s.items||[]).forEach(i=>{
+        if(m[i.prodId])m[i.prodId].totalPcs-=Number(i.pcs)||0;
+      });
+    });
+    return m;
+  };
+
+  const realStockMap=getRealStockMap();
+  const shownStockMap=getShownStockMap();
+  const pendingCount=pendingSales.filter(s=>s.status==='pending').length;
+  const quoteCount=quotes.filter(q=>q.status==='pending').length;
+  const unreadNotifs=notifications.filter(n=>!n.read).length;
+
+  const addNotif=(msg,type='info')=>{
+    setNotifications(p=>[{id:uid(),msg,type,time:nowISO(),read:false},...p].slice(0,50));
+  };
+
+  const sharedProps={
+    user,realStockMap,shownStockMap,stockEntries,setStockEntries,
+    sales,setSales,pendingSales,setPendingSales,approvedSales,setApprovedSales,
+    suppliers,setSuppliers,supplyTx,setSupplyTx,customers,setCustomers,
+    photos,setPhotos,quotes,setQuotes,purchaseInvs,setPurchaseInvs,
+    hiddenTxIds,setHiddenTxIds,yAuth,setYAuth,notifications,setNotifications,
+    addNotif,nextInvNo,getLastHighCost,pendingCount,quoteCount,unreadNotifs,
+    onLogout:()=>setUser(null)
+  };
+
+  if(!user)return h(LoginScreen,{onLogin:setUser});
+  if(user.role==='z')return h(ZView,{...sharedProps});
+  if(user.role==='y')return h(YView,{...sharedProps});
+  return h(XApp,{...sharedProps});
+}
+
+// ══ Z VIEW ════════════════════════════════════════════════════════════════════
+function ZView({shownStockMap,photos,purchaseInvs,setPurchaseInvs,suppliers,quotes,setQuotes,addNotif,nextInvNo,onLogout}){
+  const [tab,setTab]=useState('stock');
+  const [showForm,setShowForm]=useState(false);
+  const [items,setItems]=useState([{id:uid(),prodId:'HB',qty:'',unit:'carton',netCost:''}]);
+  const [suppId,setSuppId]=useState('');
+  const [date,setDate]=useState(today());
+  const [showQuote,setShowQuote]=useState(false);
+  const [qItems,setQItems]=useState([{id:uid(),prodId:'HB',qty:'',unit:'carton'}]);
+
+  const addItem=()=>setItems(p=>[...p,{id:uid(),prodId:'HB',qty:'',unit:'carton',netCost:''}]);
+  const updItem=(id,f,v)=>setItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
+  const addQItem=()=>setQItems(p=>[...p,{id:uid(),prodId:'HB',qty:'',unit:'carton'}]);
+  const updQItem=(id,f,v)=>setQItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
+
+  const submitPurchase=()=>{
+    if(items.some(i=>!i.qty||!i.netCost))return alert('Fill all fields');
+    const invItems=items.map(i=>({...i,pcs:toPcs(i.qty,i.unit,i.prodId),ctns:toCtns(toPcs(i.qty,i.unit,i.prodId),i.prodId)}));
+    const totalAmt=invItems.reduce((a,i)=>a+i.ctns*Number(i.netCost),0);
+    const prevBal=suppliers.find(s=>s.id===suppId)?.balance||0;
+    const inv={id:uid(),invNo:nextInvNo(),type:'purchase',suppId,date,items:invItems,totalAmt,prevBal,paidAmt:0,pending:totalAmt+prevBal,status:'pending_payment',createdBy:'Z',createdAt:nowISO()};
+    setPurchaseInvs(p=>[...p,inv]);
+    addNotif(`Z created Purchase Invoice #${inv.invNo} — ﷼${fmt(totalAmt)}`,'purchase');
+    setItems([{id:uid(),prodId:'HB',qty:'',unit:'carton',netCost:''}]);
+    setSuppId('');setShowForm(false);
+    alert(`✅ Purchase Invoice #${inv.invNo} submitted to X for payment entry.`);
+  };
+
+  const submitQuote=()=>{
+    if(qItems.some(i=>!i.qty))return alert('Enter qty for all items');
+    const q={id:uid(),invNo:nextInvNo(),type:'quote_z',items:qItems.map(i=>({...i,pcs:toPcs(i.qty,i.unit,i.prodId)})),date,status:'pending',createdBy:'Z',createdAt:nowISO()};
+    setQuotes(p=>[...p,q]);
+    addNotif(`Z sent a Stock Quote Request #${q.invNo}`,'quote');
+    setQItems([{id:uid(),prodId:'HB',qty:'',unit:'carton'}]);
+    setShowQuote(false);
+    alert(`✅ Quote #${q.invNo} sent to X`);
+  };
+
+  const myPurchases=purchaseInvs.filter(i=>i.createdBy==='Z');
+  const myQuotes=quotes.filter(q=>q.createdBy==='Z');
+
+  return h('div',{style:{height:'100dvh',display:'flex',flexDirection:'column',background:C.bg}},
+    h('div',{style:{background:C.bg2,padding:`calc(env(safe-area-inset-top)+10px) 14px 10px`,display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:`1px solid ${C.border}`,flexShrink:0}},
+      h('span',{style:{fontWeight:800,fontSize:15}},'👁 Z — Stock View'),
+      h('button',{onClick:onLogout,style:{...S.iconBtn,background:C.muted3,color:'#fff',fontSize:11}},'Exit')
+    ),
+    h('nav',{style:{flexShrink:0,background:'#0f172a',borderBottom:`1px solid ${C.border}`,display:'flex'}},
+      [{id:'stock',l:'📦 Stock'},{id:'purchase',l:'🧾 Purchase'},{id:'quote',l:'📋 Quote'}].map(t=>
+        h('button',{key:t.id,onClick:()=>setTab(t.id),style:{flex:1,padding:'10px 4px',background:'none',border:'none',cursor:'pointer',color:tab===t.id?C.blue:C.muted,fontWeight:tab===t.id?700:400,fontSize:12,borderBottom:tab===t.id?`2px solid ${C.blue}`:'2px solid transparent'}},t.l)
+      )
+    ),
+    h('div',{style:{flex:1,overflowY:'auto',padding:12,display:'flex',flexDirection:'column',gap:10,paddingBottom:16}},
+      // Stock tab
+      tab==='stock'&&h('div',{style:S.card},
+        h('div',{style:S.cardT},'📦 Available Stock'),
+        PRODUCTS.map(p=>{
+          const m=shownStockMap[p.id];
+          const ctns=toCtns(m.totalPcs,p.id);
+          const low=m.totalPcs<LOW;
+          const lastCost=m.layers.length?Math.max(...m.layers.map(l=>l.cpp))*(PROD_MAP[p.id].cartonPcs):0;
+          return h('div',{key:p.id,style:{...S.card,background:C.bg3,marginBottom:8,borderColor:low?'#dc2626':C.border2}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+              h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                photos[p.id]&&h('img',{src:photos[p.id],style:{width:34,height:34,borderRadius:7,objectFit:'cover'}}),
+                h('div',null,
+                  h('div',{style:{fontWeight:700,fontSize:14}},p.name),
+                  h('div',{style:{fontSize:11,color:C.muted}},p.id)
+                )
+              ),
+              h('div',{style:{textAlign:'right'}},
+                h('div',{style:{...S.badge,background:low?'#7f1d1d':'#166534',color:low?'#fca5a5':C.green}},`${ctns%1===0?ctns:ctns.toFixed(2)} ctn`),
+                lastCost>0&&h('div',{style:{fontSize:11,color:C.orange,marginTop:3}},`﷼${fmt(lastCost)}/ctn`)
+              )
+            ),
+            low&&h('div',{style:{fontSize:11,color:'#fca5a5',marginTop:4}},'⚠️ Low Stock')
+          );
+        })
+      ),
+      // Purchase tab
+      tab==='purchase'&&h('div',null,
+        h('button',{onClick:()=>setShowForm(s=>!s),style:{...S.btn,background:'#1e3a5f',color:C.blue,marginBottom:10}},showForm?'✕ Cancel':'+ New Purchase Invoice'),
+        showForm&&h('div',{style:S.card},
+          h('div',{style:S.cardT},'🧾 Purchase Invoice (Z creates — X enters payment)'),
+          h('div',{style:{fontSize:12,color:C.orange,marginBottom:8,padding:'6px 10px',background:'#1c1917',borderRadius:8}},'⚠️ Payment amount can only be entered by X'),
+          h(Sel,{label:'Supplier',value:suppId,onChange:setSuppId,options:[{v:'',l:'— Select Supplier —'},...suppliers.map(s=>({v:s.id,l:s.name}))]}),
+          h('label',{style:S.lbl},'Date'),
+          h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+          items.map((item,idx)=>h('div',{key:item.id,style:{...S.card,background:C.bg3,marginBottom:6}},
+            h('div',{style:{fontSize:12,fontWeight:700,color:C.cyan,marginBottom:6}},`Item ${idx+1}`),
+            h(Sel,{label:'Product',value:item.prodId,onChange:v=>updItem(item.id,'prodId',v),options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+            h('div',{style:S.row2},
+              h(Inp,{label:'Qty',value:item.qty,onChange:v=>updItem(item.id,'qty',v),type:'number',half:true}),
+              h(Sel,{label:'Unit',value:item.unit,onChange:v=>updItem(item.id,'unit',v),options:UNITS,half:true})
+            ),
+            h(Inp,{label:'Net Cost per Carton (﷼)',value:item.netCost,onChange:v=>updItem(item.id,'netCost',v),type:'number'}),
+            item.qty&&item.netCost&&h('div',{style:{fontSize:11,color:C.cyan,marginBottom:4}},
+              `Total: ﷼${fmt(toCtns(toPcs(item.qty,item.unit,item.prodId),item.prodId)*Number(item.netCost))}`
+            ),
+            items.length>1&&h('button',{onClick:()=>setItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',padding:'8px',fontSize:12}},'Remove')
+          )),
+          h('button',{onClick:addItem,style:{...S.btn,background:'#1e3a5f',color:C.blue,padding:'10px',marginBottom:4}},'+ Add Item'),
+          h('button',{onClick:submitPurchase,style:{...S.btn,background:'#166534',color:C.green}},'📤 Submit to X for Payment')
+        ),
+        myPurchases.length===0&&h('div',{style:{...S.card,...S.empty}},'No purchase invoices'),
+        myPurchases.map(inv=>h('div',{key:inv.id,style:{...S.card,borderColor:inv.status==='paid'?C.green:C.orange,marginBottom:0}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+            h('div',null,
+              h('div',{style:{fontWeight:700,fontSize:14}},`Invoice #${inv.invNo}`),
+              h('div',{style:{fontSize:12,color:C.muted}},`📅 ${inv.date}`)
+            ),
+            h('span',{style:{...S.badge,background:inv.status==='paid'?'#166534':'#78350f',color:inv.status==='paid'?C.green:C.orange}},inv.status==='paid'?'Paid':'Pending Payment')
+          ),
+          inv.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},
+            `${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.netCost} = ﷼${fmt(i.ctns*Number(i.netCost))}`
+          )),
+          h('div',{style:{marginTop:6}},
+            h(SumRow,{label:'Total Amount',val:`﷼${fmt(inv.totalAmt)}`,color:C.blue}),
+            h(SumRow,{label:'Paid by X',val:`﷼${fmt(inv.paidAmt)}`,color:C.green}),
+            h(SumRow,{label:'Pending',val:`﷼${fmt(inv.pending)}`,color:inv.pending>0?C.orange:C.green})
+          )
+        ))
+      ),
+      // Quote tab
+      tab==='quote'&&h('div',null,
+        h('button',{onClick:()=>setShowQuote(s=>!s),style:{...S.btn,background:'#4c1d95',color:C.purple,marginBottom:10}},showQuote?'✕ Cancel':'+ New Quote Request'),
+        showQuote&&h('div',{style:S.card},
+          h('div',{style:S.cardT},'📋 Quote Request to X'),
+          h('label',{style:S.lbl},'Date'),
+          h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+          qItems.map((item,idx)=>h('div',{key:item.id,style:{...S.card,background:C.bg3,marginBottom:6}},
+            h(Sel,{label:'Product',value:item.prodId,onChange:v=>updQItem(item.id,'prodId',v),options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+            h('div',{style:S.row2},
+              h(Inp,{label:'Qty',value:item.qty,onChange:v=>updQItem(item.id,'qty',v),type:'number',half:true}),
+              h(Sel,{label:'Unit',value:item.unit,onChange:v=>updQItem(item.id,'unit',v),options:UNITS,half:true})
+            ),
+            qItems.length>1&&h('button',{onClick:()=>setQItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',padding:'8px',fontSize:12}},'Remove')
+          )),
+          h('button',{onClick:addQItem,style:{...S.btn,background:'#1e3a5f',color:C.blue,padding:'10px',marginBottom:4}},'+ Add Item'),
+          h('button',{onClick:submitQuote,style:{...S.btn,background:'#4c1d95',color:C.purple}},'📤 Send Quote to X')
+        ),
+        myQuotes.length===0&&h('div',{style:{...S.card,...S.empty}},'No quotes sent'),
+        myQuotes.map(q=>h('div',{key:q.id,style:{...S.card,borderColor:q.status==='confirmed'?C.green:q.status==='rejected'?C.red:C.orange,marginBottom:0}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:6}},
+            h('div',{style:{fontWeight:700,fontSize:14}},`Quote #${q.invNo}`),
+            h('span',{style:{...S.badge,background:q.status==='confirmed'?'#166534':q.status==='rejected'?'#7f1d1d':'#78350f',color:q.status==='confirmed'?C.green:q.status==='rejected'?'#fca5a5':C.orange}},q.status)
+          ),
+          q.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0'}},`${i.prodId}: ${i.qty} ${i.unit}`)),
+          q.xNote&&h('div',{style:{fontSize:12,color:C.cyan,marginTop:6}},`X note: ${q.xNote}`)
+        ))
+      )
+    )
+  );
+}
+
+// ══ Y VIEW ════════════════════════════════════════════════════════════════════
+function YView({shownStockMap,photos,pendingSales,setPendingSales,approvedSales,sales,setSales,customers,setCustomers,quotes,setQuotes,addNotif,nextInvNo,getLastHighCost,yAuth,onLogout}){
+  const [tab,setTab]=useState('stock');
+  const [items,setItems]=useState([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+  const [custName,setCustName]=useState('');
+  const [date,setDate]=useState(today());
+  const [submitted,setSubmitted]=useState(null);
+  const [searchInv,setSearchInv]=useState('');
+  const [showQuote,setShowQuote]=useState(false);
+  const [qItems,setQItems]=useState([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+
+  const addItem=()=>setItems(p=>[...p,{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+  const updItem=(id,f,v)=>setItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
+
+  const submitSale=()=>{
+    if(!custName.trim())return alert('Enter customer name');
+    if(items.some(i=>!i.qty||!i.salePrice))return alert('Fill all items');
+    const invNo=nextInvNo();
+    const saleItems=items.map(i=>{
+      const pcs=toPcs(i.qty,i.unit,i.prodId);
+      const ctns=toCtns(pcs,i.prodId);
+      const saleTotal=ctns*Number(i.salePrice);
+      return{...i,pcs,ctns,saleTotal};
+    });
+    const totalSale=saleItems.reduce((a,i)=>a+i.saleTotal,0);
+    const newSale={id:uid(),invNo,custName:custName.trim(),items:saleItems,date,totalSale,status:'pending',submittedBy:'Y',createdAt:nowISO()};
+    setPendingSales(p=>[...p,newSale]);
+    addNotif(`Y submitted Sale #${invNo} — ${custName} — ﷼${fmt(totalSale)}`,'sale');
+    setSubmitted(newSale);
+    setItems([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+    setCustName('');
+  };
+
+  const submitQuote=()=>{
+    if(qItems.some(i=>!i.qty))return alert('Enter qty');
+    const invNo=nextInvNo();
+    const q={id:uid(),invNo,type:'quote_y',items:qItems.map(i=>({...i,pcs:toPcs(i.qty,i.unit,i.prodId),ctns:toCtns(toPcs(i.qty,i.unit,i.prodId),i.prodId)})),date,status:'pending',createdBy:'Y',createdAt:nowISO()};
+    setQuotes(p=>[...p,q]);
+    addNotif(`Y sent Quote #${invNo} for approval`,'quote');
+    setQItems([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+    setShowQuote(false);
+    alert(`✅ Quote #${invNo} sent to X`);
+  };
+
+  const myApproved=approvedSales.filter(s=>s.submittedBy==='Y');
+  const myPending=pendingSales.filter(s=>s.submittedBy==='Y'&&s.status==='pending');
+  const myQuotes=quotes.filter(q=>q.createdBy==='Y');
+  const totalProfit=myApproved.reduce((a,s)=>a+Number(s.profit||0),0);
+
+  const foundInv=searchInv?[...myApproved,...myPending].find(s=>s.invNo===searchInv.padStart(3,'0')):null;
+
+  const shareInvoice=(s)=>{
+    let msg=`*StockMate Invoice #${s.invNo}*\n`;
+    msg+=`Customer: ${s.custName}\nDate: ${s.date}\n`;
+    msg+=`─────────────────\n`;
+    s.items.forEach(i=>{msg+=`${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}\n`});
+    msg+=`─────────────────\n`;
+    msg+=`Total Sale: ﷼${fmt(s.totalSale)}\n`;
+    if(s.profit!=null){
+      msg+=`Profit: ﷼${fmt(s.profit)}\n`;
+      msg+=`Y Share (50%): ﷼${fmt(s.profit/2)}\n`;
+    }
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  return h('div',{style:{height:'100dvh',display:'flex',flexDirection:'column',background:C.bg}},
+    h('div',{style:{background:C.bg2,padding:`calc(env(safe-area-inset-top)+10px) 14px 10px`,display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:`1px solid ${C.border}`,flexShrink:0}},
+      h('span',{style:{fontWeight:800,fontSize:15}},'👤 Y — Partner View'),
+      h('button',{onClick:onLogout,style:{...S.iconBtn,background:C.muted3,color:'#fff',fontSize:11}},'Exit')
+    ),
+    h('nav',{style:{flexShrink:0,background:'#0f172a',borderBottom:`1px solid ${C.border}`,display:'flex',overflowX:'auto'}},
+      [{id:'stock',l:'📦 Stock'},{id:'sale',l:'💰 Sale'},{id:`pending`,l:`⏳(${myPending.length})`},{id:'approved',l:'✅ Done'},{id:'quote',l:'📋 Quote'}].map(t=>
+        h('button',{key:t.id,onClick:()=>setTab(t.id),style:{flex:'0 0 auto',padding:'10px 12px',background:'none',border:'none',cursor:'pointer',color:tab===t.id?C.blue:C.muted,fontWeight:tab===t.id?700:400,fontSize:12,borderBottom:tab===t.id?`2px solid ${C.blue}`:'2px solid transparent',whiteSpace:'nowrap'}},t.l)
+      )
+    ),
+    h('div',{style:{flex:1,overflowY:'auto',padding:12,display:'flex',flexDirection:'column',gap:10,paddingBottom:16}},
+      // Stock
+      tab==='stock'&&h('div',null,
+        yAuth.remainQty&&h('div',{style:{...S.card,borderColor:C.green,marginBottom:0}},
+          h('div',{style:{...S.cardT,color:C.green}},'✅ X Authorized: Full Stock View'),
+          PRODUCTS.map(p=>{
+            const m=shownStockMap[p.id];const ctns=toCtns(m.totalPcs,p.id);const low=m.totalPcs<LOW;
+            const lastCost=yAuth.costPrice&&m.layers.length?Math.max(...m.layers.map(l=>l.cpp))*PROD_MAP[p.id].cartonPcs:null;
+            return h('div',{key:p.id,style:S.row},
+              h('span',{style:{fontSize:13,fontWeight:600}},p.name),
+              h('div',{style:{textAlign:'right'}},
+                h('span',{style:{...S.badge,background:low?'#7f1d1d':'#166534',color:low?'#fca5a5':C.green}},`${ctns%1===0?ctns:ctns.toFixed(2)}ctn`),
+                lastCost&&h('div',{style:{fontSize:11,color:C.orange}},`﷼${fmt(lastCost)}/ctn`)
+              )
+            );
+          })
+        ),
+        !yAuth.remainQty&&h('div',{style:S.card},
+          h('div',{style:S.cardT},'📦 Stock (Qty Only)'),
+          PRODUCTS.map(p=>{
+            const m=shownStockMap[p.id];const ctns=toCtns(m.totalPcs,p.id);const low=m.totalPcs<LOW;
+            return h('div',{key:p.id,style:S.row},
+              h('span',{style:{fontSize:13,fontWeight:600}},p.name),
+              h('span',{style:{...S.badge,background:low?'#7f1d1d':'#166534',color:low?'#fca5a5':C.green}},`${ctns%1===0?ctns:ctns.toFixed(2)}ctn`)
+            );
+          })
+        )
+      ),
+      // Sale
+      tab==='sale'&&h('div',null,
+        submitted&&h('div',{style:{...S.card,borderColor:C.green,marginBottom:10}},
+          h('div',{style:{...S.cardT,color:C.green}},`✅ Sale #${submitted.invNo} Submitted to X`),
+          h('div',{style:{fontSize:13,color:C.muted}},'Waiting for X approval...'),
+          h('button',{onClick:()=>setSubmitted(null),style:{...S.btn,background:'#166534',color:C.green,marginTop:8}},'New Sale')
+        ),
+        !submitted&&h('div',{style:S.card},
+          h('div',{style:S.cardT},'💰 New Sale (Needs X Approval)'),
+          h(Inp,{label:'Customer Name',value:custName,onChange:setCustName,placeholder:'Customer name'}),
+          h('label',{style:S.lbl},'Date'),
+          h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+          items.map((item,idx)=>h('div',{key:item.id,style:{...S.card,background:C.bg3,marginBottom:6}},
+            h('div',{style:{fontSize:12,fontWeight:700,color:C.orange,marginBottom:6}},`Item ${idx+1}`),
+            h(Sel,{label:'Product',value:item.prodId,onChange:v=>updItem(item.id,'prodId',v),options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+            h('div',{style:S.row2},
+              h(Inp,{label:'Qty',value:item.qty,onChange:v=>updItem(item.id,'qty',v),type:'number',half:true}),
+              h(Sel,{label:'Unit',value:item.unit,onChange:v=>updItem(item.id,'unit',v),options:UNITS,half:true})
+            ),
+            item.qty&&h('div',{style:{fontSize:11,color:C.cyan,marginBottom:6}},`= ${toCtns(toPcs(item.qty,item.unit,item.prodId),item.prodId).toFixed(2)} ctn`),
+            h(Inp,{label:'Sale Price/Carton (﷼)',value:item.salePrice,onChange:v=>updItem(item.id,'salePrice',v),type:'number'}),
+            items.length>1&&h('button',{onClick:()=>setItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',padding:'8px',fontSize:12}},'Remove')
+          )),
+          h('button',{onClick:addItem,style:{...S.btn,background:'#1e3a5f',color:C.blue,padding:'10px',marginBottom:4}},'+ Add Item'),
+          h('button',{onClick:submitSale,style:{...S.btn,background:'#1d4ed8',color:C.blue}},'📤 Submit for X Approval')
+        )
+      ),
+      // Pending
+      tab==='pending'&&h('div',null,
+        myPending.length===0&&h('div',{style:{...S.card,...S.empty}},'No pending sales'),
+        myPending.map(s=>h('div',{key:s.id,style:{...S.card,borderColor:C.orange,marginBottom:0}},
+          h('div',{style:{fontWeight:700,fontSize:14,marginBottom:4}},`Invoice #${s.invNo} — ⏳ Waiting X`),
+          h('div',{style:{fontSize:12,color:C.muted,marginBottom:6}},`${s.custName} | ${s.date} | ﷼${fmt(s.totalSale)}`),
+          s.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},
+            `${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}`
+          ))
+        ))
+      ),
+      // Approved
+      tab==='approved'&&h('div',null,
+        h('div',{style:S.card},
+          h(Inp,{label:'Search by Invoice Number',value:searchInv,onChange:setSearchInv,placeholder:'e.g. 001'}),
+          foundInv&&h('div',{style:{fontSize:12,color:C.green}},`Found: Invoice #${foundInv.invNo} — ${foundInv.custName}`)
+        ),
+        h('div',{style:{...S.card,borderColor:C.purple,marginBottom:0}},
+          h(SumRow,{label:'Total Sales',val:`﷼${fmt(myApproved.reduce((a,s)=>a+s.totalSale,0))}`,color:C.green}),
+          h(SumRow,{label:'Total Profit',val:`﷼${fmt(totalProfit)}`,color:C.purple}),
+          h(SumRow,{label:'Y Share (50%)',val:`﷼${fmt(totalProfit/2)}`,color:C.cyan})
+        ),
+        myApproved.length===0&&h('div',{style:{...S.card,...S.empty}},'No approved sales yet'),
+        myApproved.map(s=>h('div',{key:s.id,style:{...S.card,borderColor:C.green,marginBottom:0}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+            h('div',{style:{fontWeight:700,fontSize:14}},`Invoice #${s.invNo}`),
+            h('span',{style:{...S.badge,background:'#166534',color:C.green}},'✅ Approved')
+          ),
+          h('div',{style:{fontSize:12,color:C.muted,marginBottom:6}},`${s.custName} | ${s.date}`),
+          s.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},
+            `${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}`
+          )),
+          h('div',{style:{marginTop:6}},
+            h(SumRow,{label:'Total Sale',val:`﷼${fmt(s.totalSale)}`,color:C.green}),
+            s.profit!=null&&h(SumRow,{label:'Profit',val:`﷼${fmt(s.profit)}`,color:C.purple}),
+            s.profit!=null&&h(SumRow,{label:'Y 50%',val:`﷼${fmt(s.profit/2)}`,color:C.cyan}),
+            s.profit!=null&&h(SumRow,{label:'X 50%',val:`﷼${fmt(s.profit/2)}`,color:C.yellow})
+          ),
+          h('button',{onClick:()=>shareInvoice(s),style:{...S.btn,background:'#166534',color:C.green,marginTop:8,padding:'10px'}},'📤 Share Invoice via WhatsApp')
+        ))
+      ),
+      // Quote
+      tab==='quote'&&h('div',null,
+        h('button',{onClick:()=>setShowQuote(s=>!s),style:{...S.btn,background:'#4c1d95',color:C.purple,marginBottom:10}},showQuote?'✕ Cancel':'+ New Quote Request'),
+        showQuote&&h('div',{style:S.card},
+          h('div',{style:S.cardT},'📋 Quote to X'),
+          h('label',{style:S.lbl},'Date'),
+          h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+          qItems.map((item,idx)=>h('div',{key:item.id,style:{...S.card,background:C.bg3,marginBottom:6}},
+            h(Sel,{label:'Product',value:item.prodId,onChange:v=>updQItem(item.id,'prodId',v),options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+            h('div',{style:S.row2},
+              h(Inp,{label:'Qty',value:item.qty,onChange:v=>updQItem(item.id,'qty',v),type:'number',half:true}),
+              h(Sel,{label:'Unit',value:item.unit,onChange:v=>updQItem(item.id,'unit',v),options:UNITS,half:true})
+            ),
+            h(Inp,{label:'Suggested Sale Price (optional)',value:item.salePrice||'',onChange:v=>updQItem(item.id,'salePrice',v),type:'number'}),
+            qItems.length>1&&h('button',{onClick:()=>setQItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',padding:'8px',fontSize:12}},'Remove')
+          )),
+          h('button',{onClick:()=>setQItems(p=>[...p,{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]),style:{...S.btn,background:'#1e3a5f',color:C.blue,padding:'10px',marginBottom:4}},'+ Add Item'),
+          h('button',{onClick:submitQuote,style:{...S.btn,background:'#4c1d95',color:C.purple}},'📤 Send Quote to X')
+        ),
+        myQuotes.length===0&&h('div',{style:{...S.card,...S.empty}},'No quotes'),
+        myQuotes.map(q=>h('div',{key:q.id,style:{...S.card,borderColor:q.status==='confirmed'?C.green:q.status==='rejected'?C.red:C.orange,marginBottom:0}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},
+            h('div',{style:{fontWeight:700,fontSize:14}},`Quote #${q.invNo}`),
+            h('span',{style:{...S.badge,background:q.status==='confirmed'?'#166534':q.status==='rejected'?'#7f1d1d':'#78350f',color:q.status==='confirmed'?C.green:q.status==='rejected'?'#fca5a5':C.orange}},q.status)
+          ),
+          q.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0'}},`${i.prodId}: ${i.qty} ${i.unit}${i.salePrice?` @ ﷼${i.salePrice}`:''}`)),
+          q.xNote&&h('div',{style:{fontSize:12,color:C.cyan,marginTop:6,padding:'6px',background:C.bg3,borderRadius:6}},`X: ${q.xNote}`)
+        ))
+      )
+    )
+  );
+}
+
+// ══ X APP ════════════════════════════════════════════════════════════════════
+const X_TABS=[
+  {id:'dash',icon:'🏠',label:'Home'},
+  {id:'stock',icon:'📦',label:'Stock'},
+  {id:'sales',icon:'💰',label:'Sales'},
+  {id:'approve',icon:'✅',label:'Approve'},
+  {id:'supply',icon:'🚚',label:'Supply'},
+  {id:'report',icon:'📊',label:'Report'},
+];
+
+function XApp(props){
+  const {pendingCount,quoteCount,unreadNotifs,notifications,setNotifications,onLogout}=props;
+  const [tab,setTab]=useState('dash');
+  const totalAlerts=pendingCount+quoteCount;
+
+  return h('div',{style:{height:'100dvh',display:'flex',flexDirection:'column',background:C.bg}},
+    h('div',{style:{background:'linear-gradient(135deg,#0f172a,#1a1a2e)',padding:`calc(env(safe-area-inset-top)+10px) 14px 10px`,display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:`1px solid ${C.border}`,flexShrink:0}},
+      h('span',{style:{fontWeight:800,fontSize:16}},'📦 StockMate Pro — X'),
+      h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+        totalAlerts>0&&h('span',{style:{...S.badge,background:'#dc2626',color:'#fff',cursor:'pointer'},onClick:()=>setTab('approve')},`${totalAlerts} pending`),
+        unreadNotifs>0&&h('span',{style:{...S.badge,background:'#4c1d95',color:C.purple,cursor:'pointer'},onClick:()=>setTab('dash')},`🔔${unreadNotifs}`),
+        h('button',{onClick:onLogout,style:{...S.iconBtn,background:C.muted3,color:'#fff',fontSize:11}},'Exit')
+      )
+    ),
+    h('div',{style:{flex:1,overflowY:'auto',WebkitOverflowScrolling:'touch',overscrollBehavior:'contain'}},
+      tab==='dash'&&h(XDash,{...props,setTab}),
+      tab==='stock'&&h(XStock,{...props}),
+      tab==='sales'&&h(XSales,{...props}),
+      tab==='approve'&&h(XApprove,{...props}),
+      tab==='supply'&&h(XSupply,{...props}),
+      tab==='report'&&h(XReport,{...props}),
+    ),
+    h('nav',{style:{flexShrink:0,background:'#0f172a',borderTop:`1px solid ${C.border}`,display:'flex',justifyContent:'space-around',padding:`6px 0 calc(6px + env(safe-area-inset-bottom))`}},
+      X_TABS.map(t=>h('button',{key:t.id,onClick:()=>setTab(t.id),style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',background:'none',border:'none',cursor:'pointer',padding:'4px 0',gap:2,color:tab===t.id?C.blue:C.muted2,position:'relative'}},
+        h('span',{style:{fontSize:17}},t.icon),
+        (t.id==='approve'&&totalAlerts>0)&&h('span',{style:{position:'absolute',top:0,right:'8%',background:'#dc2626',color:'#fff',borderRadius:'50%',width:14,height:14,fontSize:9,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700}},totalAlerts),
+        h('span',{style:{fontSize:9,fontWeight:600}},t.label)
+      ))
+    )
+  );
+}
+
+// ── X DASHBOARD ───────────────────────────────────────────────────────────────
+function XDash({realStockMap,shownStockMap,sales,approvedSales,supplyTx,customers,pendingSales,quoteCount,notifications,setNotifications,setTab,yAuth,setYAuth,hiddenTxIds}){
+  const pending=pendingSales.filter(s=>s.status==='pending');
+  const allSales=[...sales,...approvedSales];
+  const totalSales=allSales.reduce((a,s)=>a+Number(s.totalSale||0),0);
+  const custPending=customers.reduce((a,c)=>a+Number(c.pendingAmt||0),0);
+  const suppPending=supplyTx.filter(t=>t.type==='credit').reduce((a,t)=>a+t.amount,0)-supplyTx.filter(t=>t.type==='payment').reduce((a,t)=>a+t.amount,0);
+  const lowReal=PRODUCTS.filter(p=>realStockMap[p.id].totalPcs<LOW);
+  const markRead=()=>setNotifications(p=>p.map(n=>({...n,read:true})));
+
+  return h('div',{style:S.page},
+    h('div',{style:S.grid2},
+      h(KpiCard,{label:'Total Sales',value:`﷼${fmt(totalSales)}`,color:C.green,icon:'💰'}),
+      h(KpiCard,{label:'Pending Approval',value:pending.length+quoteCount,color:pending.length>0?C.red:C.muted,icon:'⏳'}),
+      h(KpiCard,{label:'Cust. Pending',value:`﷼${fmt(custPending)}`,color:C.orange,icon:'👤'}),
+      h(KpiCard,{label:'Supplier Due',value:`﷼${fmt(suppPending)}`,color:C.red,icon:'🚚'})
+    ),
+    // Y Authorization controls
+    h('div',{style:{...S.card,borderColor:'#4c1d95'}},
+      h('div',{style:{...S.cardT,color:C.purple}},'🔐 Y Authorization Controls'),
+      [{k:'costPrice',l:'Allow Y to see Cost Price'},{k:'currentPrice',l:'Allow Y to see Current Price'},{k:'remainQty',l:'Allow Y to see Full Stock Details'}].map(item=>
+        h('div',{key:item.k,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:`1px solid ${C.bg3}`}},
+          h('span',{style:{fontSize:13,color:'#e2e8f0'}},item.l),
+          h('button',{onClick:()=>setYAuth(p=>({...p,[item.k]:!p[item.k]})),
+            style:{...S.badge,background:yAuth[item.k]?'#166534':'#374151',color:yAuth[item.k]?C.green:'#9ca3af',cursor:'pointer',padding:'5px 12px'}},
+            yAuth[item.k]?'ON':'OFF'
+          )
+        )
+      )
+    ),
+    // Notifications
+    notifications.length>0&&h('div',{style:S.card},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:S.cardT},'🔔 Notifications'),
+        h('button',{onClick:markRead,style:{...S.badge,background:C.muted3,color:'#fff',cursor:'pointer'}},'Mark all read')
+      ),
+      notifications.slice(0,5).map(n=>h('div',{key:n.id,style:{fontSize:12,padding:'5px 0',borderBottom:`1px solid ${C.bg3}`,color:n.read?C.muted:'#e2e8f0',display:'flex',justifyContent:'space-between'}},
+        h('span',null,n.msg),
+        h('span',{style:{color:C.muted,fontSize:10,whiteSpace:'nowrap',marginLeft:4}},n.time.slice(0,10))
+      ))
+    ),
+    // Both stock views
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'📦 Real Stock vs Shown Stock'),
+      PRODUCTS.map(p=>{
+        const real=toCtns(realStockMap[p.id].totalPcs,p.id);
+        const shown=toCtns(shownStockMap[p.id].totalPcs,p.id);
+        const diff=real-shown;
+        return h('div',{key:p.id,style:{...S.row,flexWrap:'wrap'}},
+          h('span',{style:{fontSize:12,fontWeight:600,minWidth:60}},p.id),
+          h('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+            h('span',{style:{...S.badge,background:'#166534',color:C.green,fontSize:10}},`Real: ${real%1===0?real:real.toFixed(2)}ctn`),
+            h('span',{style:{...S.badge,background:'#1e3a5f',color:C.blue,fontSize:10}},`Shown: ${shown%1===0?shown:shown.toFixed(2)}ctn`),
+            diff!==0&&h('span',{style:{...S.badge,background:'#4c1d95',color:C.purple,fontSize:10}},`Δ${diff>0?'+':''}${diff.toFixed(2)}`)
+          )
+        );
+      })
+    ),
+    lowReal.length>0&&h('div',{style:{...S.card,borderColor:'#dc2626'}},
+      h('div',{style:{...S.cardT,color:C.red}},'⚠️ Low Stock (Real)'),
+      lowReal.map(p=>h('div',{key:p.id,style:S.row},
+        h('span',{style:{fontSize:13}},p.name),
+        h('span',{style:{...S.badge,background:'#7f1d1d',color:'#fca5a5'}},dispCtns(realStockMap[p.id].totalPcs,p.id))
+      ))
+    )
+  );
+}
+
+// ── X STOCK ───────────────────────────────────────────────────────────────────
+function XStock({stockEntries,setStockEntries,photos,setPhotos,realStockMap,shownStockMap,hiddenTxIds,setHiddenTxIds,sales,approvedSales}){
+  const [prodId,setProdId]=useState('HB');
+  const [qty,setQty]=useState('');
+  const [unit,setUnit]=useState('carton');
+  const [cost,setCost]=useState('');
+  const [suppName,setSuppName]=useState('');
+  const [date,setDate]=useState(today());
+  const [filter,setFilter]=useState('');
+
+  const add=()=>{
+    if(!qty||!cost)return alert('Enter qty and cost');
+    const pcs=toPcs(qty,unit,prodId);
+    setStockEntries(p=>[...p,{id:uid(),prodId,qty:Number(qty),unit,pcs,costPerCarton:Number(cost),suppName,date}]);
+    setQty('');setCost('');setSuppName('');
+  };
+
+  const toggleHide=(id)=>setHiddenTxIds(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+
+  const shareStock=()=>{
+    let msg='*StockMate — Stock Availability*\n';
+    msg+=`Date: ${today()}\n─────────────────\n`;
+    PRODUCTS.forEach(p=>{
+      const m=realStockMap[p.id];const ctns=toCtns(m.totalPcs,p.id);
+      const lastCost=m.layers.length?Math.max(...m.layers.map(l=>l.cpp))*PROD_MAP[p.id].cartonPcs:0;
+      msg+=`${p.name}: ${ctns%1===0?ctns:ctns.toFixed(2)}ctn`;
+      if(lastCost>0)msg+=` @ ﷼${fmt(lastCost)}/ctn`;
+      msg+='\n';
+    });
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  const allTx=[...stockEntries.map(e=>({...e,txType:'stock'})),...[...sales,...approvedSales].map(s=>({...s,txType:'sale'}))].sort((a,b)=>b.date.localeCompare(a.date));
+  const filtered=filter?allTx.filter(t=>(t.prodId||'').toLowerCase().includes(filter.toLowerCase())||(t.custName||'').toLowerCase().includes(filter.toLowerCase())):allTx;
+
+  return h('div',{style:S.page},
+    h('button',{onClick:shareStock,style:{...S.btn,background:'#166534',color:C.green}},'📤 Share Stock List via WhatsApp'),
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'📥 Add Stock Entry'),
+      h(Sel,{label:'Product',value:prodId,onChange:setProdId,options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+      h('div',{style:S.row2},
+        h(Inp,{label:'Qty',value:qty,onChange:setQty,type:'number',half:true}),
+        h(Sel,{label:'Unit',value:unit,onChange:setUnit,options:UNITS,half:true})
+      ),
+      qty&&h('div',{style:{fontSize:11,color:C.cyan,marginBottom:6}},`= ${toCtns(toPcs(qty,unit,prodId),prodId).toFixed(2)} ctn`),
+      h(Inp,{label:'Cost per Carton (﷼)',value:cost,onChange:setCost,type:'number'}),
+      h(Inp,{label:'Supplier (optional)',value:suppName,onChange:setSuppName}),
+      h('label',{style:S.lbl},'Date'),
+      h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+      h('div',{style:{marginBottom:8}},
+        h('label',{style:S.lbl},'Product Photo'),
+        h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+          photos[prodId]?h('img',{src:photos[prodId],style:{width:40,height:40,borderRadius:8,objectFit:'cover'}}):h('div',{style:{width:40,height:40,borderRadius:8,background:C.bg3,border:`1px dashed ${C.border}`,display:'flex',alignItems:'center',justifyContent:'center'}},'📷'),
+          h('label',{style:{...S.btnSm,background:'#1e3a5f',color:C.blue,textAlign:'center',padding:'9px 14px',borderRadius:10,cursor:'pointer'}},
+            'Add Photo',h('input',{type:'file',accept:'image/*',style:{display:'none'},onChange:e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>setPhotos(p=>({...p,[prodId]:ev.target.result}));r.readAsDataURL(f);e.target.value='';}}))
+        )
+      ),
+      h('button',{onClick:add,style:{...S.btn,background:'#14532d',color:C.green}},'+ Add to Stock')
+    ),
+    // Transaction history with hide/show toggle
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},`📋 All Transactions (${allTx.length})`),
+      h('div',{style:{fontSize:11,color:C.orange,marginBottom:8}},'Toggle 👁 to hide/show from Y and Z'),
+      h(Inp,{label:'Search by product or customer',value:filter,onChange:setFilter,placeholder:'Filter...'}),
+      filtered.length===0&&h('div',{style:S.empty},'No transactions'),
+      filtered.slice(0,30).map(t=>{
+        const isHidden=hiddenTxIds.includes(t.id);
+        return h('div',{key:t.id,style:{background:isHidden?'#1a0000':C.bg3,borderRadius:10,border:`1px solid ${isHidden?'#dc2626':C.border2}`,padding:10,marginBottom:8}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+            h('div',{style:{flex:1}},
+              h('div',{style:{fontWeight:700,fontSize:13,color:t.txType==='sale'?C.orange:C.green}},
+                t.txType==='sale'?`🛒 Sale — ${t.custName||''} ${t.invNo?'#'+t.invNo:''}`:`📥 Stock — ${PROD_MAP[t.prodId]?.name||t.prodId}`
+              ),
+              t.txType==='stock'&&h('div',{style:{fontSize:12,color:C.muted}},`${t.qty} ${t.unit} (${dispCtns(t.pcs,t.prodId)}) @ ﷼${t.costPerCarton}/ctn`),
+              t.txType==='sale'&&h('div',{style:{fontSize:12,color:C.muted}},`﷼${fmt(t.totalSale)} | ${(t.items||[]).map(i=>i.prodId).join(', ')}`),
+              h('div',{style:{fontSize:11,color:C.muted2}},`📅 ${t.date}`),
+              isHidden&&h('div',{style:{fontSize:11,color:'#fca5a5',marginTop:2}},'🚫 Hidden from Y and Z')
+            ),
+            h('button',{onClick:()=>toggleHide(t.id),style:{...S.iconBtn,background:isHidden?'#7f1d1d':'#166534',color:'#fff',fontSize:16}},isHidden?'🚫':'👁')
+          )
+        );
+      })
+    )
+  );
+}
+
+// ── X SALES ───────────────────────────────────────────────────────────────────
+function XSales({sales,setSales,customers,setCustomers,realStockMap,getLastHighCost,nextInvNo,addNotif}){
+  const [custName,setCustName]=useState('');
+  const [selCust,setSelCust]=useState('');
+  const [items,setItems]=useState([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);
+  const [date,setDate]=useState(today());
+  const [paidAmt,setPaidAmt]=useState('');
+  const [showInv,setShowInv]=useState(null);
+  const [editInv,setEditInv]=useState(null);
+  const custList=[...new Set(customers.map(c=>c.name))];
+  const updItem=(id,f,v)=>setItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
+
+  const saveSale=()=>{
+    const cName=(selCust||custName).trim();
+    if(!cName)return alert('Enter customer name');
+    if(items.some(i=>!i.qty||!i.salePrice))return alert('Fill all items');
+    const invNo=nextInvNo();
+    const saleItems=items.map(i=>{
+      const pcs=toPcs(i.qty,i.unit,i.prodId);const ctns=toCtns(pcs,i.prodId);
+      const cpp=getLastHighCost(i.prodId);
+      const costTotal=ctns*cpp;const saleTotal=ctns*Number(i.salePrice);
+      return{...i,pcs,ctns,costTotal,saleTotal,grossProfit:saleTotal-costTotal};
+    });
+    const totalSale=saleItems.reduce((a,i)=>a+i.saleTotal,0);
+    const totalProfit=saleItems.reduce((a,i)=>a+i.grossProfit,0);
+    const paid=Number(paidAmt)||0;const pending=totalSale-paid;
+    const newSale={id:uid(),invNo,custName:cName,items:saleItems,date,totalSale,totalProfit,paid,pending,sProfit:totalProfit/2,nProfit:totalProfit/2,createdAt:nowISO(),by:'X'};
+    setSales(p=>[...p,newSale]);
+    setCustomers(p=>{const ex=p.find(c=>c.name===cName);if(ex)return p.map(c=>c.name===cName?{...c,totalSales:Number(c.totalSales||0)+totalSale,pendingAmt:Number(c.pendingAmt||0)+pending}:c);return[...p,{id:uid(),name:cName,totalSales:totalSale,pendingAmt:pending}]});
+    setShowInv(newSale);setItems([{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]);setPaidAmt('');setCustName('');setSelCust('');
+  };
+
+  const updateSale=(inv)=>{
+    const saleItems=editInv.items.map(i=>{
+      const pcs=toPcs(i.qty||i.ctns,i.unit||'carton',i.prodId);const ctns=toCtns(pcs,i.prodId);
+      const cpp=getLastHighCost(i.prodId);const costTotal=ctns*cpp;const saleTotal=ctns*Number(i.salePrice);
+      return{...i,pcs,ctns,costTotal,saleTotal,grossProfit:saleTotal-costTotal};
+    });
+    const totalSale=saleItems.reduce((a,i)=>a+i.saleTotal,0);
+    const totalProfit=saleItems.reduce((a,i)=>a+i.grossProfit,0);
+    setSales(p=>p.map(s=>s.id===editInv.id?{...editInv,items:saleItems,totalSale,totalProfit,sProfit:totalProfit/2,nProfit:totalProfit/2}:s));
+    setEditInv(null);alert(`✅ Invoice #${editInv.invNo} updated`);
+  };
+
+  const shareInv=(s)=>{
+    let msg=`*Invoice #${s.invNo}*\nDate: ${s.date}\nCustomer: ${s.custName}\n─────────\n`;
+    s.items.forEach(i=>{msg+=`${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}\n`});
+    msg+=`─────────\nTotal: ﷼${fmt(s.totalSale)}\nCost: ﷼${fmt(s.items.reduce((a,i)=>a+i.costTotal,0))}\nProfit: ﷼${fmt(s.totalProfit)}\nX 50%: ﷼${fmt(s.sProfit)}\nY 50%: ﷼${fmt(s.nProfit)}`;
+    if(s.pending>0)msg+=`\nPending: ﷼${fmt(s.pending)}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  return h('div',{style:S.page},
+    showInv&&h('div',{style:{...S.card,borderColor:C.green}},
+      h('div',{style:{...S.cardT,color:C.green}},`✅ Invoice #${showInv.invNo} Saved`),
+      showInv.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},`${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.salePrice} = ﷼${fmt(i.saleTotal)}`)),
+      h('div',{style:{marginTop:6}},
+        h(SumRow,{label:'Total Sale',val:`﷼${fmt(showInv.totalSale)}`,color:C.green}),
+        h(SumRow,{label:'Total Cost',val:`﷼${fmt(showInv.items.reduce((a,i)=>a+i.costTotal,0))}`,color:C.red}),
+        h(SumRow,{label:'Profit',val:`﷼${fmt(showInv.totalProfit)}`,color:C.purple}),
+        h(SumRow,{label:'X 50%',val:`﷼${fmt(showInv.sProfit)}`,color:C.cyan}),
+        h(SumRow,{label:'Y 50%',val:`﷼${fmt(showInv.nProfit)}`,color:C.yellow}),
+        showInv.pending>0&&h(SumRow,{label:'Pending',val:`﷼${fmt(showInv.pending)}`,color:C.orange})
+      ),
+      h('div',{style:{display:'flex',gap:8,marginTop:8}},
+        h('button',{onClick:()=>shareInv(showInv),style:{...S.btnSm,background:'#166534',color:C.green}},'📤 WhatsApp'),
+        h('button',{onClick:()=>setShowInv(null),style:{...S.btnSm,background:C.muted3,color:'#fff'}},'New Sale')
+      )
+    ),
+    !showInv&&h('div',{style:S.card},
+      h('div',{style:S.cardT},'💰 New Sale Invoice'),
+      custList.length>0&&h(Sel,{label:'Customer',value:selCust,onChange:setSelCust,options:[{v:'',l:'— New —'},...custList.map(c=>({v:c,l:c}))]}),
+      !selCust&&h(Inp,{label:'New Customer Name',value:custName,onChange:setCustName}),
+      h('label',{style:S.lbl},'Date'),h('input',{type:'date',value:date,onChange:e=>setDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+      items.map((item,idx)=>h('div',{key:item.id,style:{...S.card,background:C.bg3,marginBottom:6}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:C.orange,marginBottom:6}},`Item ${idx+1}`),
+        h(Sel,{label:'Product',value:item.prodId,onChange:v=>updItem(item.id,'prodId',v),options:PRODUCTS.map(p=>({v:p.id,l:`${p.id} – ${p.name}`}))}),
+        h('div',{style:S.row2},h(Inp,{label:'Qty',value:item.qty,onChange:v=>updItem(item.id,'qty',v),type:'number',half:true}),h(Sel,{label:'Unit',value:item.unit,onChange:v=>updItem(item.id,'unit',v),options:UNITS,half:true})),
+        item.qty&&h('div',{style:{fontSize:11,color:C.cyan,marginBottom:6}},`= ${toCtns(toPcs(item.qty,item.unit,item.prodId),item.prodId).toFixed(2)} ctn`),
+        h(Inp,{label:'Sale Price/Carton (﷼)',value:item.salePrice,onChange:v=>updItem(item.id,'salePrice',v),type:'number'}),
+        items.length>1&&h('button',{onClick:()=>setItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',padding:'8px',fontSize:12}},'Remove')
+      )),
+      h('button',{onClick:()=>setItems(p=>[...p,{id:uid(),prodId:'HB',qty:'',unit:'carton',salePrice:''}]),style:{...S.btn,background:'#1e3a5f',color:C.blue,padding:'10px',marginBottom:4}},'+ Add Item'),
+      h(Inp,{label:'Amount Paid (﷼)',value:paidAmt,onChange:setPaidAmt,type:'number',placeholder:'0'}),
+      h('button',{onClick:saveSale,style:{...S.btn,background:'#1d4ed8',color:C.blue}},'💾 Save Invoice')
+    ),
+    // Invoice history with edit
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'📋 Invoice History'),
+      sales.length===0&&h('div',{style:S.empty},'No invoices'),
+      [...sales].reverse().map(s=>editInv&&editInv.id===s.id?
+        h('div',{key:s.id,style:{...S.card,background:C.bg3,borderColor:C.yellow,marginBottom:8}},
+          h('div',{style:{fontWeight:700,fontSize:13,color:C.yellow,marginBottom:6}},`✏️ Editing Invoice #${s.invNo}`),
+          h(Inp,{label:'Customer',value:editInv.custName,onChange:v=>setEditInv(p=>({...p,custName:v}))}),
+          editInv.items.map((item,idx)=>h('div',{key:idx,style:{marginBottom:6}},
+            h(Sel,{label:'Product',value:item.prodId,onChange:v=>setEditInv(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,prodId:v}:x)})),options:PRODUCTS.map(p=>({v:p.id,l:p.id}))}),
+            h('div',{style:S.row2},
+              h(Inp,{label:'Qty(ctn)',value:item.ctns,onChange:v=>setEditInv(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,ctns:v,qty:v,unit:'carton',pcs:toPcs(v,'carton',item.prodId)}:x)})),type:'number',half:true}),
+              h(Inp,{label:'Sale ﷼/ctn',value:item.salePrice,onChange:v=>setEditInv(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,salePrice:v}:x)})),type:'number',half:true})
+            )
+          )),
+          h('div',{style:S.row2},
+            h('button',{onClick:updateSale,style:{...S.btnSm,background:'#166534',color:C.green}},'✅ Save'),
+            h('button',{onClick:()=>setEditInv(null),style:{...S.btnSm,background:C.muted3,color:'#fff'}},'Cancel')
+          )
+        ):
+        h('div',{key:s.id,style:{background:C.bg3,borderRadius:10,border:`1px solid ${C.border2}`,padding:10,marginBottom:8}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+            h('div',null,
+              h('div',{style:{fontWeight:700,fontSize:14}},`Invoice #${s.invNo}`),
+              h('div',{style:{fontSize:12,color:C.muted}},`${s.custName} | ${s.date} | ﷼${fmt(s.totalSale)}`)
+            ),
+            h('div',{style:{display:'flex',gap:6}},
+              h('button',{onClick:()=>shareInv(s),style:{...S.iconBtn,background:'#166534',color:'#fff'}},'📤'),
+              h('button',{onClick:()=>setEditInv({...s,items:s.items.map(i=>({...i}))}),style:{...S.iconBtn,background:'#1e40af',color:'#fff'}},'✏️'),
+              h('button',{onClick:()=>setSales(p=>p.filter(x=>x.id!==s.id)),style:{...S.iconBtn,background:'#7f1d1d',color:'#fff'}},'🗑️')
+            )
+          ),
+          h(SumRow,{label:'Sale',val:`﷼${fmt(s.totalSale)}`,color:C.green}),
+          h(SumRow,{label:'Profit',val:`﷼${fmt(s.totalProfit)}`,color:C.purple}),
+          s.pending>0&&h(SumRow,{label:'Pending',val:`﷼${fmt(s.pending)}`,color:C.orange})
+        )
+      )
+    )
+  );
+}
+
+// ── X APPROVE ─────────────────────────────────────────────────────────────────
+function XApprove({pendingSales,setPendingSales,approvedSales,setApprovedSales,quotes,setQuotes,purchaseInvs,setPurchaseInvs,suppliers,setSuppliers,getLastHighCost,setSales,setCustomers,addNotif}){
+  const [tab,setTab]=useState('sales');
+  const pending=pendingSales.filter(s=>s.status==='pending');
+  const pendingQuotes=quotes.filter(q=>q.status==='pending');
+  const pendingPurchases=purchaseInvs.filter(i=>i.status==='pending_payment');
+
+  const approve=(sale)=>{
+    const saleItems=sale.items.map(i=>{
+      const ctns=Number(i.ctns||0);const cpp=getLastHighCost(i.prodId);
+      const costTotal=ctns*cpp;const saleTotal=Number(i.saleTotal||0);
+      return{...i,costTotal,grossProfit:saleTotal-costTotal};
+    });
+    const totalProfit=saleItems.reduce((a,i)=>a+i.grossProfit,0);
+    const approved={...sale,items:saleItems,profit:totalProfit,status:'approved',approvedAt:nowISO()};
+    setPendingSales(p=>p.map(s=>s.id===sale.id?{...s,status:'approved'}:s));
+    setApprovedSales(p=>[...p,approved]);
+    setSales(p=>[...p,{...approved,totalSale:sale.totalSale,totalProfit,paid:sale.totalSale,pending:0}]);
+    setCustomers(p=>{const ex=p.find(c=>c.name===sale.custName);if(ex)return p.map(c=>c.name===sale.custName?{...c,totalSales:Number(c.totalSales||0)+sale.totalSale}:c);return[...p,{id:uid(),name:sale.custName,totalSales:sale.totalSale,pendingAmt:0}]});
+    addNotif(`✅ Sale #${sale.invNo} approved`,'approve');
+  };
+
+  const reject=(id)=>{setPendingSales(p=>p.map(s=>s.id===id?{...s,status:'rejected'}:s));addNotif(`❌ Sale rejected`,'reject')};
+
+  const [editQ,setEditQ]=useState(null);
+  const confirmQuote=(q)=>{
+    setQuotes(p=>p.map(x=>x.id===q.id?{...editQ,status:'confirmed'}:x));
+    setEditQ(null);addNotif(`✅ Quote #${q.invNo} confirmed`,'quote');
+  };
+
+  const [payAmt,setPayAmt]=useState('');
+  const enterPayment=(inv)=>{
+    const paid=Number(payAmt)||0;const pending=Math.max(0,inv.totalAmt-paid);
+    setPurchaseInvs(p=>p.map(i=>i.id===inv.id?{...i,paidAmt:paid,pending,status:pending<=0?'paid':'partial'}:i));
+    if(inv.suppId){
+      setSuppliers(p=>p.map(s=>s.id===inv.suppId?{...s,balance:Number(s.balance||0)+inv.totalAmt-paid}:s));
+    }
+    setPayAmt('');addNotif(`💰 Payment ﷼${fmt(paid)} entered for Purchase #${inv.invNo}`,'payment');
+  };
+
+  return h('div',{style:{height:'100%',display:'flex',flexDirection:'column'}},
+    h('nav',{style:{flexShrink:0,background:'#0f172a',borderBottom:`1px solid ${C.border}`,display:'flex'}},
+      [{id:'sales',l:`Sales (${pending.length})`},{id:'quotes',l:`Quotes (${pendingQuotes.length})`},{id:'purchase',l:`Purchase (${pendingPurchases.length})`}].map(t=>
+        h('button',{key:t.id,onClick:()=>setTab(t.id),style:{flex:1,padding:'10px 4px',background:'none',border:'none',cursor:'pointer',color:tab===t.id?C.blue:C.muted,fontWeight:tab===t.id?700:400,fontSize:12,borderBottom:tab===t.id?`2px solid ${C.blue}`:'2px solid transparent'}},t.l)
+      )
+    ),
+    h('div',{style:{flex:1,overflowY:'auto',padding:12,display:'flex',flexDirection:'column',gap:10,paddingBottom:16}},
+      // Approve sales
+      tab==='sales'&&h('div',null,
+        pending.length===0&&h('div',{style:{...S.card,...S.empty}},'✅ No pending sales'),
+        pending.map(s=>{
+          const preview=s.items.map(i=>{const ctns=Number(i.ctns||0);const cpp=getLastHighCost(i.prodId);const costTotal=ctns*cpp;const saleTotal=Number(i.saleTotal||0);return{...i,costTotal,grossProfit:saleTotal-costTotal}});
+          const totalProfit=preview.reduce((a,i)=>a+i.grossProfit,0);
+          return h('div',{key:s.id,style:{...S.card,borderColor:C.orange,marginBottom:0}},
+            h('div',{style:{...S.cardT,color:C.orange}},`⏳ Y Sale #${s.invNo}`),
+            h('div',{style:{fontSize:13,fontWeight:600,marginBottom:4}},`${s.custName} | ${s.date}`),
+            preview.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,padding:'3px 0',borderBottom:`1px solid ${C.bg3}`,color:'#9ca3af'}},
+              `${i.prodId}: ${i.ctns.toFixed(2)}ctn | Sale: ﷼${fmt(i.saleTotal)} | Cost: ﷼${fmt(i.costTotal)} | Profit: `,h('span',{style:{color:i.grossProfit>=0?C.green:C.red}},`﷼${fmt(i.grossProfit)}`)
+            )),
+            h('div',{style:{marginTop:6}},
+              h(SumRow,{label:'Total Sale',val:`﷼${fmt(s.totalSale)}`,color:C.green}),
+              h(SumRow,{label:'Profit',val:`﷼${fmt(totalProfit)}`,color:C.purple}),
+              h(SumRow,{label:'X 50%',val:`﷼${fmt(totalProfit/2)}`,color:C.cyan}),
+              h(SumRow,{label:'Y 50%',val:`﷼${fmt(totalProfit/2)}`,color:C.yellow})
+            ),
+            h('div',{style:{display:'flex',gap:8,marginTop:8}},
+              h('button',{onClick:()=>approve(s),style:{...S.btnSm,background:'#166534',color:C.green}},'✅ Approve'),
+              h('button',{onClick:()=>reject(s.id),style:{...S.btnSm,background:'#7f1d1d',color:'#fca5a5'}},'❌ Reject')
+            )
+          );
+        })
+      ),
+      // Approve quotes
+      tab==='quotes'&&h('div',null,
+        pendingQuotes.length===0&&h('div',{style:{...S.card,...S.empty}},'No pending quotes'),
+        pendingQuotes.map(q=>editQ&&editQ.id===q.id?
+          h('div',{key:q.id,style:{...S.card,borderColor:C.yellow,marginBottom:0}},
+            h('div',{style:{...S.cardT,color:C.yellow}},`✏️ Edit Quote #${q.invNo} from ${q.createdBy}`),
+            editQ.items.map((item,idx)=>h('div',{key:idx,style:{...S.card,background:C.bg3,marginBottom:6}},
+              h(Sel,{label:'Product',value:item.prodId,onChange:v=>setEditQ(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,prodId:v}:x)})),options:PRODUCTS.map(p=>({v:p.id,l:p.id}))}),
+              h('div',{style:S.row2},
+                h(Inp,{label:'Qty',value:item.qty,onChange:v=>setEditQ(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,qty:v}:x)})),type:'number',half:true}),
+                h(Sel,{label:'Unit',value:item.unit||'carton',onChange:v=>setEditQ(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,unit:v}:x)})),options:UNITS,half:true})
+              ),
+              h(Inp,{label:'Sale Price/Carton ﷼',value:item.salePrice||'',onChange:v=>setEditQ(p=>({...p,items:p.items.map((x,i)=>i===idx?{...x,salePrice:v}:x)})),type:'number'})
+            )),
+            h(Inp,{label:'Note to Y/Z',value:editQ.xNote||'',onChange:v=>setEditQ(p=>({...p,xNote:v}))}),
+            h('div',{style:S.row2},
+              h('button',{onClick:()=>confirmQuote(q),style:{...S.btnSm,background:'#166534',color:C.green}},'✅ Confirm'),
+              h('button',{onClick:()=>setEditQ(null),style:{...S.btnSm,background:C.muted3,color:'#fff'}},'Cancel'),
+              h('button',{onClick:()=>{setQuotes(p=>p.map(x=>x.id===q.id?{...x,status:'rejected'}:x));setEditQ(null)},style:{...S.btnSm,background:'#7f1d1d',color:'#fca5a5'}},'Reject')
+            )
+          ):
+          h('div',{key:q.id,style:{...S.card,borderColor:C.orange,marginBottom:0}},
+            h('div',{style:{...S.cardT,color:C.orange}},`📋 Quote #${q.invNo} from ${q.createdBy}`),
+            h('div',{style:{fontSize:12,color:C.muted,marginBottom:6}},`Date: ${q.date}`),
+            q.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},`${i.prodId}: ${i.qty} ${i.unit||''}${i.salePrice?` @ ﷼${i.salePrice}`:''}`)),
+            h('button',{onClick:()=>setEditQ({...q,items:q.items.map(i=>({...i}))}),style:{...S.btn,background:'#1e40af',color:C.blue,marginTop:8,padding:'10px'}},'✏️ Edit & Confirm')
+          )
+        )
+      ),
+      // Purchase payment entry
+      tab==='purchase'&&h('div',null,
+        pendingPurchases.length===0&&h('div',{style:{...S.card,...S.empty}},'No pending purchase payments'),
+        pendingPurchases.map(inv=>h('div',{key:inv.id,style:{...S.card,borderColor:C.orange,marginBottom:0}},
+          h('div',{style:{...S.cardT,color:C.orange}},`🧾 Purchase #${inv.invNo} — Z`),
+          h('div',{style:{fontSize:12,color:C.muted,marginBottom:6}},`Date: ${inv.date}`),
+          inv.items.map((i,idx)=>h('div',{key:idx,style:{fontSize:12,color:'#9ca3af',padding:'3px 0',borderBottom:`1px solid ${C.bg3}`}},`${i.prodId}: ${i.ctns.toFixed(2)}ctn × ﷼${i.netCost} = ﷼${fmt(i.ctns*Number(i.netCost))}`)),
+          h('div',{style:{marginTop:6}},
+            h(SumRow,{label:'Total Amount',val:`﷼${fmt(inv.totalAmt)}`,color:C.blue}),
+            h(SumRow,{label:'Previous Balance',val:`﷼${fmt(inv.prevBal)}`,color:C.orange}),
+            h(SumRow,{label:'Total Due',val:`﷼${fmt(inv.totalAmt+inv.prevBal)}`,color:C.red})
+          ),
+          h('div',{style:{marginTop:8}},
+            h('label',{style:S.lbl},'Enter Payment Amount (X only)'),
+            h('div',{style:S.row2},
+              h('input',{type:'number',value:payAmt,onChange:e=>setPayAmt(e.target.value),placeholder:'Amount paid',inputMode:'decimal',style:{...S.inp,flex:1,marginBottom:0}}),
+              h('button',{onClick:()=>enterPayment(inv),style:{...S.btnSm,background:'#166534',color:C.green,flex:'0 0 auto'}},'Save')
+            )
+          )
+        ))
+      )
+    )
+  );
+}
+
+// ── X SUPPLY ──────────────────────────────────────────────────────────────────
+function XSupply({suppliers,setSuppliers,supplyTx,setSupplyTx}){
+  const [showNew,setShowNew]=useState(false);
+  const [name,setName]=useState('');
+  const [showTx,setShowTx]=useState(false);
+  const [txSupp,setTxSupp]=useState('');
+  const [txAmt,setTxAmt]=useState('');
+  const [txNote,setTxNote]=useState('');
+  const [txDate,setTxDate]=useState(today());
+  const [txType,setTxType]=useState('credit');
+  const [view,setView]=useState(null);
+
+  const addSupp=()=>{if(!name.trim())return;setSuppliers(p=>[...p,{id:uid(),name:name.trim(),balance:0}]);setName('');setShowNew(false)};
+  const addTx=()=>{
+    if(!txSupp||!txAmt)return alert('Fill all fields');
+    setSupplyTx(p=>[...p,{id:uid(),suppName:txSupp,amount:Number(txAmt),type:txType,note:txNote,date:txDate}]);
+    setTxAmt('');setTxNote('');setShowTx(false);
+  };
+
+  return h('div',{style:S.page},
+    h('div',{style:{display:'flex',gap:8}},
+      h('button',{onClick:()=>setShowNew(s=>!s),style:{...S.btn,background:'#1e3a5f',color:C.blue,flex:1,marginTop:0}},showNew?'✕':'+ Supplier'),
+      h('button',{onClick:()=>setShowTx(s=>!s),style:{...S.btn,background:'#78350f',color:C.orange,flex:1,marginTop:0}},showTx?'✕':'+ Transaction')
+    ),
+    showNew&&h('div',{style:S.card},h(Inp,{label:'Supplier Name',value:name,onChange:setName}),h('button',{onClick:addSupp,style:{...S.btn,background:'#1e3a5f',color:C.blue}},'Save')),
+    showTx&&h('div',{style:S.card},
+      h(Sel,{label:'Supplier',value:txSupp,onChange:setTxSupp,options:[{v:'',l:'— Select —'},...suppliers.map(s=>({v:s.name,l:s.name}))]}),
+      h(Sel,{label:'Type',value:txType,onChange:setTxType,options:[{v:'credit',l:'Credit (We owe)'},{v:'payment',l:'Payment Made'}]}),
+      h(Inp,{label:'Amount ﷼',value:txAmt,onChange:setTxAmt,type:'number'}),
+      h(Inp,{label:'Note',value:txNote,onChange:setTxNote}),
+      h('label',{style:S.lbl},'Date'),h('input',{type:'date',value:txDate,onChange:e=>setTxDate(e.target.value),style:{...S.inp,marginBottom:8}}),
+      h('button',{onClick:addTx,style:{...S.btn,background:'#78350f',color:C.orange}},'Save')
+    ),
+    suppliers.length===0&&h('div',{style:{...S.card,...S.empty}},'No suppliers'),
+    suppliers.map(s=>{
+      const txs=supplyTx.filter(t=>t.suppName===s.name);
+      const credit=txs.filter(t=>t.type==='credit').reduce((a,t)=>a+t.amount,0);
+      const paid=txs.filter(t=>t.type==='payment').reduce((a,t)=>a+t.amount,0);
+      const bal=credit-paid;
+      return h('div',{key:s.id,style:{...S.card,borderColor:bal>0?C.orange:C.green,cursor:'pointer',marginBottom:0},onClick:()=>setView(view===s.name?null:s.name)},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('div',null,h('div',{style:{fontWeight:700,fontSize:14}},`${s.name} ${view===s.name?'▲':'▼'}`),h('div',{style:{fontSize:12,color:bal>0?C.orange:C.green}},bal>0?`Due: ﷼${fmt(bal)}`:'✅ Clear')),
+          h('button',{onClick:e=>{e.stopPropagation();setSuppliers(p=>p.filter(x=>x.name!==s.name))},style:{...S.iconBtn,background:'#7f1d1d',color:'#fff'}},'🗑️')
+        ),
+        view===s.name&&h('div',{style:{marginTop:8}},
+          h(SumRow,{label:'Credit',val:`﷼${fmt(credit)}`,color:C.red}),
+          h(SumRow,{label:'Paid',val:`﷼${fmt(paid)}`,color:C.green}),
+          h(SumRow,{label:'Balance',val:`﷼${fmt(bal)}`,color:bal>0?C.orange:C.green}),
+          [...txs].reverse().map(t=>h('div',{key:t.id,style:{fontSize:12,padding:'4px 0',borderBottom:`1px solid ${C.bg3}`,display:'flex',justifyContent:'space-between'}},
+            h('span',{style:{color:C.muted}},`${t.date} ${t.note||t.type}`),
+            h('span',{style:{color:t.type==='payment'?C.green:C.orange}},`﷼${fmt(t.amount)}`)
+          ))
+        )
+      );
+    })
+  );
+}
+
+// ── X REPORT ──────────────────────────────────────────────────────────────────
+function XReport({sales,approvedSales,customers,supplyTx,suppliers,realStockMap,getLastHighCost,
+  setStockEntries,setSales,setSuppliers,setSupplyTx,setCustomers,setPhotos,setPendingSales,setApprovedSales,setQuotes,setPurchaseInvs,setHiddenTxIds,setNotifications}){
+  const [pass,setPass]=useState('');
+  const [unlocked,setUnlocked]=useState(false);
+  const [passErr,setPassErr]=useState(false);
+  const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
+  const [confirm,setConfirm]=useState(false);
+
+  const allSales=[...sales,...approvedSales.filter(a=>!sales.find(s=>s.id===a.id))];
+  const mSales=allSales.filter(s=>s.date&&s.date.startsWith(month));
+  const totalSalesVal=mSales.reduce((a,s)=>a+Number(s.totalSale||0),0);
+  const totalProfit=mSales.reduce((a,s)=>a+Number(s.totalProfit||s.profit||0),0);
+  const totalPending=customers.reduce((a,c)=>a+Number(c.pendingAmt||0),0);
+  const prodBreak=PRODUCTS.map(p=>{
+    const ps=mSales.flatMap(s=>(s.items||[]).filter(i=>i.prodId===p.id));
+    return{...p,ctns:ps.reduce((a,i)=>a+Number(i.ctns||0),0),val:ps.reduce((a,i)=>a+Number(i.saleTotal||0),0),profit:ps.reduce((a,i)=>a+Number(i.grossProfit||0),0)};
+  }).filter(p=>p.ctns>0);
+  const suppBal=suppliers.map(s=>{const txs=supplyTx.filter(t=>t.suppName===s.name);const credit=txs.filter(t=>t.type==='credit').reduce((a,t)=>a+t.amount,0);const paid=txs.filter(t=>t.type==='payment').reduce((a,t)=>a+t.amount,0);return{...s,bal:credit-paid}});
+
+  const shareReport=()=>{
+    let msg=`*StockMate Report — ${month}*\n─────────\nSales: ﷼${fmt(totalSalesVal)}\n`;
+    prodBreak.forEach(p=>{msg+=`${p.id}: ${p.ctns.toFixed(2)}ctn = ﷼${fmt(p.val)}\n`});
+    if(unlocked){msg+=`─────────\nProfit: ﷼${fmt(totalProfit)}\nX 50%: ﷼${fmt(totalProfit/2)}\nY 50%: ﷼${fmt(totalProfit/2)}\n`}
+    msg+=`Pending: ﷼${fmt(totalPending)}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,'_blank');
+  };
+
+  const exportData=()=>{
+    const d={sales,approvedSales,suppliers,supplyTx,customers,exported:new Date().toISOString()};
+    const b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+    const u=URL.createObjectURL(b);
+    const a=document.createElement('a');a.href=u;a.download=`sm-${today()}.json`;a.click();URL.revokeObjectURL(u);
+  };
+
+  return h('div',{style:S.page},
+    h('div',{style:S.card},h('div',{style:S.cardT},'📊 Monthly Report'),h('label',{style:S.lbl},'Month'),h('input',{type:'month',value:month,onChange:e=>setMonth(e.target.value),style:{...S.inp,marginBottom:0}})),
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'Summary'),
+      h(SumRow,{label:'Total Sales',val:`﷼${fmt(totalSalesVal)}`,color:C.green}),
+      h(SumRow,{label:'Invoices',val:`${mSales.length}`,color:C.blue}),
+      h(SumRow,{label:'Customer Pending',val:`﷼${fmt(totalPending)}`,color:C.orange})
+    ),
+    prodBreak.length>0&&h('div',{style:S.card},
+      h('div',{style:S.cardT},'Product Breakdown'),
+      prodBreak.map(p=>h('div',{key:p.id,style:S.row},h('span',{style:{fontSize:13,fontWeight:600}},p.id),h('div',{style:{textAlign:'right'}},h('div',{style:{fontSize:12,color:C.green}},`${p.ctns.toFixed(2)}ctn`),h('div',{style:{fontSize:11,color:C.muted}},`﷼${fmt(p.val)}`))))
+    ),
+    !unlocked?h('div',{style:{...S.card,borderColor:'#4c1d95'}},
+      h('div',{style:{...S.cardT,color:C.purple}},'🔐 Profit (Private)'),
+      h(Inp,{label:'Password',value:pass,onChange:setPass,type:'password'}),
+      passErr&&h('div',{style:{color:C.red,fontSize:12,marginBottom:6}},'❌ Wrong password'),
+      h('button',{onClick:()=>{if(pass==='1989'){setUnlocked(true);setPassErr(false)}else{setPassErr(true);setPass('')}},style:{...S.btn,background:'#4c1d95',color:C.purple}},'Unlock')
+    ):
+    h('div',{style:{...S.card,borderColor:C.purple}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:{...S.cardT,color:C.purple,marginBottom:0}},'🔓 Profit Report'),
+        h('button',{onClick:()=>setUnlocked(false),style:{...S.iconBtn,background:'#4c1d95',color:'#fff',fontSize:11}},'Lock')
+      ),
+      h(SumRow,{label:'Gross Profit',val:`﷼${fmt(totalProfit)}`,color:C.purple}),
+      h(SumRow,{label:'X 50%',val:`﷼${fmt(totalProfit/2)}`,color:C.cyan}),
+      h(SumRow,{label:'Y 50%',val:`﷼${fmt(totalProfit/2)}`,color:C.yellow}),
+      unlocked&&suppBal.length>0&&h('div',{style:{marginTop:8}},h('div',{style:{fontSize:12,color:C.orange,fontWeight:700,marginBottom:6}},'Supplier Balances:'),suppBal.map(s=>h('div',{key:s.id,style:S.row},h('span',{style:{fontSize:13}},s.name),h('span',{style:{color:s.bal>0?C.orange:C.green,fontWeight:700}},`﷼${fmt(Math.abs(s.bal))} ${s.bal>0?'owed':'clear'}`)))),
+      h('button',{onClick:shareReport,style:{...S.btn,background:'#166534',color:C.green,marginTop:8}},'📤 Share Report')
+    ),
+    h('div',{style:S.card},
+      h('div',{style:S.cardT},'💾 Backup & Reset'),
+      h('button',{onClick:exportData,style:{...S.btn,background:'#1e3a5f',color:C.blue}},'📤 Export Backup'),
+      !confirm?h('button',{onClick:()=>setConfirm(true),style:{...S.btn,background:'#7f1d1d',color:'#fca5a5',marginTop:8}},'⚠️ Reset All Data'):
+      h('div',{style:{marginTop:8}},
+        h('div',{style:{color:C.red,fontSize:12,marginBottom:8}},'Are you sure? Cannot undo.'),
+        h('div',{style:S.row2},
+          h('button',{onClick:()=>{setStockEntries([]);setSales([]);setSuppliers([]);setSupplyTx([]);setCustomers([]);setPhotos({});setPendingSales([]);setApprovedSales([]);setQuotes([]);setPurchaseInvs([]);setHiddenTxIds([]);setNotifications([]);setConfirm(false)},style:{...S.btnSm,background:'#dc2626',color:'#fff'}},'Yes Reset'),
+          h('button',{onClick:()=>setConfirm(false),style:{...S.btnSm,background:C.muted3,color:'#fff'}},'Cancel')
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App,null));
+</script>
+</body>
+</html>
