@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="StockMate"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#0a0a0f"/>
+<title>StockMate</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;overflow:hidden}
+  body{
+    background:#0a0a0f;
+    color:#f1f5f9;
+    font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;
+    overscroll-behavior:none;
+    -webkit-user-select:none;
+    user-select:none;
+  }
+  /* Allow text selection in inputs */
+  input,textarea{-webkit-user-select:text;user-select:text;}
+  #root{
+    width:100%;
+    max-width:430px;
+    margin:0 auto;
+    height:100%;
+    height:100dvh;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  input,select,button{font-family:inherit}
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+  input[type=date]{color-scheme:dark}
+  /* Prevent iOS zoom on input focus */
+  input,select,textarea{font-size:16px !important}
+  /* Smooth scroll */
+  .scroll-area{
+    flex:1;
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior-y:contain;
+  }
+  /* Install banner */
+  #install-banner{
+    display:none;
+    position:fixed;
+    bottom:0;left:0;right:0;
+    background:linear-gradient(135deg,#1e3a5f,#0f2744);
+    border-top:1px solid #3b82f6;
+    padding:12px 16px;
+    padding-bottom:calc(12px + env(safe-area-inset-bottom));
+    z-index:999;
+    text-align:center;
+  }
+  #install-banner.show{display:block}
+  #install-banner p{font-size:13px;color:#93c5fd;line-height:1.5}
+  #install-banner strong{color:#fff}
+  #install-banner button{
+    margin-top:8px;
+    background:#1d4ed8;
+    border:none;border-radius:8px;
+    color:#fff;font-size:13px;font-weight:600;
+    padding:7px 20px;cursor:pointer;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- iOS Install Banner (shown when NOT in standalone mode) -->
+<div id="install-banner">
+  <p>📲 To use StockMate as an app:<br/>Tap <strong>Share ⬆️</strong> → <strong>"Add to Home Screen"</strong></p>
+  <button onclick="document.getElementById('install-banner').classList.remove('show')">Got it ✓</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>
+// Show install banner if not running as standalone PWA
+(function(){
+  var isStandalone = window.navigator.standalone === true
+    || window.matchMedia('(display-mode: standalone)').matches;
+  if(!isStandalone){
+    document.getElementById('install-banner').classList.add('show');
+  }
+})();
+
+const {useState,useEffect,useCallback,useRef}=React;
+
+// ── Storage: IndexedDB with localStorage fallback ────────────────────────────
+// On iOS Home Screen, localStorage can be cleared by the OS.
+// We use IndexedDB (more persistent) with localStorage as fallback.
+const DB_NAME='stockmate_db', DB_VER=1, DB_STORE='kv';
+let dbReady=null;
+function openDB(){
+  if(dbReady)return dbReady;
+  dbReady=new Promise((res,rej)=>{
+    const req=indexedDB.open(DB_NAME,DB_VER);
+    req.onupgradeneeded=e=>e.target.result.createObjectStore(DB_STORE);
+    req.onsuccess=e=>res(e.target.result);
+    req.onerror=()=>rej(req.error);
+  });
+  return dbReady;
+}
+async function idbGet(k){
+  try{
+    const db=await openDB();
+    return new Promise((res,rej)=>{
+      const tx=db.transaction(DB_STORE,'readonly');
+      const req=tx.objectStore(DB_STORE).get(k);
+      req.onsuccess=()=>res(req.result??null);
+      req.onerror=()=>rej(req.error);
+    });
+  }catch{
+    try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}
+  }
+}
+async function idbSet(k,v){
+  try{
+    const db=await openDB();
+    return new Promise((res,rej)=>{
+      const tx=db.transaction(DB_STORE,'readwrite');
+      tx.objectStore(DB_STORE).put(v,k);
+      tx.oncomplete=()=>res();
+      tx.onerror=()=>rej(tx.error);
+    });
+  }catch{
+    try{localStorage.setItem(k,JSON.stringify(v))}catch{}
+  }
+}
+
+// Sync wrappers used at startup (fallback to localStorage for initial load)
+const loadSync=k=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null}catch{return null}};
+const saveSync=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+const uid=()=>Math.random().toString(36).slice(2,9);
+const fmt=n=>Number(n||0).toFixed(2);
+const today=()=>new Date().toISOString().slice(0,10);
+const TABS=["Dashboard","Stock","Remove","Debt","Summary"];
+const TAB_ICON={Dashboard:"🏠",Stock:"📥",Remove:"📤",Debt:"💳",Summary:"📊"};
+
+// ── Styles ───────────────────────────────────────────────────────────────────
+const S={
+  header:{
+    background:"linear-gradient(135deg,#0f172a,#1a1a2e)",
+    padding:`calc(env(safe-area-inset-top) + 14px) 16px 12px`,
+    display:"flex",justifyContent:"space-between",alignItems:"center",
+    borderBottom:"1px solid #1e293b",
+    flexShrink:0,
+  },
+  logo:{fontSize:20,fontWeight:800,letterSpacing:"-0.5px"},
+  content:{flex:1,overflowY:"auto",paddingBottom:8,WebkitOverflowScrolling:"touch"},
+  nav:{
+    flexShrink:0,
+    background:"#0f172a",
+    borderTop:"1px solid #1e293b",
+    display:"flex",justifyContent:"space-around",
+    padding:`6px 0 calc(6px + env(safe-area-inset-bottom))`,
+  },
+  navBtn:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",background:"none",border:"none",cursor:"pointer",padding:"4px 0",gap:2},
+  page:{padding:12,display:"flex",flexDirection:"column",gap:12,paddingBottom:16},
+  card:{background:"#0f172a",border:"1px solid #1e293b",borderRadius:16,padding:14},
+  cardTitle:{fontSize:14,fontWeight:700,color:"#93c5fd",marginBottom:10,letterSpacing:"0.3px"},
+  grid2:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10},
+  kpi:{background:"#0f172a",border:"1px solid",borderRadius:14,padding:"12px 10px",display:"flex",flexDirection:"column",gap:4},
+  entryCard:{background:"#111827",borderRadius:12,border:"1px solid #1f2937",padding:10,marginBottom:8},
+  row:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:"1px solid #111827"},
+  row2:{display:"flex",gap:8,marginBottom:8},
+  label:{fontSize:12,color:"#6b7280",fontWeight:600,display:"block",marginBottom:4},
+  input:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontSize:16,outline:"none",WebkitAppearance:"none",appearance:"none"},
+  select:{width:"100%",background:"#1e293b",border:"1px solid #334155",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontSize:16,outline:"none",WebkitAppearance:"none",appearance:"none"},
+  btnGreen:{width:"100%",background:"linear-gradient(135deg,#14532d,#166534)",border:"none",borderRadius:12,padding:14,color:"#4ade80",fontWeight:700,fontSize:16,cursor:"pointer",marginTop:4},
+  btnRed:{width:"100%",background:"linear-gradient(135deg,#7f1d1d,#991b1b)",border:"none",borderRadius:12,padding:14,color:"#fca5a5",fontWeight:700,fontSize:16,cursor:"pointer",marginTop:4},
+  btnOrange:{width:"100%",background:"linear-gradient(135deg,#78350f,#92400e)",border:"none",borderRadius:12,padding:14,color:"#fdba74",fontWeight:700,fontSize:16,cursor:"pointer"},
+  btnBlue:{width:"100%",background:"linear-gradient(135deg,#1e3a8a,#1d4ed8)",border:"none",borderRadius:12,padding:14,color:"#93c5fd",fontWeight:700,fontSize:16,cursor:"pointer"},
+  btnSmall:{flex:1,border:"none",borderRadius:10,padding:"10px 12px",color:"#f1f5f9",fontWeight:600,fontSize:14,cursor:"pointer"},
+  iconBtn:{border:"none",borderRadius:8,padding:"8px 10px",color:"#fff",fontSize:15,cursor:"pointer",lineHeight:1,minWidth:38,minHeight:38,display:"flex",alignItems:"center",justifyContent:"center"},
+  badge:{fontSize:11,fontWeight:700,borderRadius:8,padding:"3px 8px",color:"#fff"},
+  empty:{color:"#374151",fontSize:13,textAlign:"center",padding:"16px 0"},
+  vpill:{fontSize:11,fontWeight:600,borderRadius:8,padding:"3px 8px",display:"inline-block",marginTop:4},
+};
+
+// ── Input component ──────────────────────────────────────────────────────────
+function Inp({label,value,onChange,type="text",placeholder=""}){
+  return React.createElement("div",{style:{marginBottom:8}},
+    label&&React.createElement("label",{style:S.label},label),
+    React.createElement("input",{
+      type,value,
+      onChange:e=>onChange(e.target.value),
+      placeholder,
+      inputMode:type==="number"?"decimal":"text",
+      style:S.input,
+      autoComplete:"off",
+      autoCorrect:"off",
+      autoCapitalize:type==="number"?"none":"words",
+    })
+  );
+}
+
+// ── KPI Card ─────────────────────────────────────────────────────────────────
+function KpiCard({label,value,color,icon}){
+  return React.createElement("div",{style:{...S.kpi,borderColor:color}},
+    React.createElement("span",{style:{fontSize:20}},icon),
+    React.createElement("span",{style:{fontSize:18,fontWeight:800,color,letterSpacing:"-0.5px"}},value),
+    React.createElement("span",{style:{fontSize:10,color:"#64748b",lineHeight:1.2}},label)
+  );
+}
+
+// ── SumRow ────────────────────────────────────────────────────────────────────
+function SumRow({label,val,color}){
+  return React.createElement("div",{style:{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #111827"}},
+    React.createElement("span",{style:{color:"#9ca3af",fontSize:13}},label),
+    React.createElement("span",{style:{color,fontWeight:700,fontSize:14}},val)
+  );
+}
+
+// ══ DASHBOARD ════════════════════════════════════════════════════════════════
+function Dashboard({stock,removals,debts}){
+  const stockMap={};
+  stock.forEach(e=>{
+    if(!stockMap[e.name])stockMap[e.name]={name:e.name,totalPcs:0};
+    stockMap[e.name].totalPcs+=Number(e.pcs);
+  });
+  const remMap={};
+  removals.forEach(e=>{
+    if(!remMap[e.name])remMap[e.name]=0;
+    remMap[e.name]+=Number(e.pcs);
+  });
+  const totalIn=stock.reduce((a,e)=>a+Number(e.pcs)*Number(e.price),0);
+  const totalOut=removals.reduce((a,e)=>a+Number(e.pcs)*Number(e.price),0);
+  const openDebts=debts.filter(d=>!d.paid);
+  const totalDebt=openDebts.reduce((a,d)=>a+d.items.reduce((b,i)=>b+Number(i.qty)*Number(i.price),0),0);
+  const varieties=Object.keys(stockMap).length;
+
+  return React.createElement("div",{style:S.page},
+    React.createElement("div",{style:S.grid2},
+      React.createElement(KpiCard,{label:"Total Stock Value",value:`﷼${fmt(totalIn)}`,color:"#4ade80",icon:"💰"}),
+      React.createElement(KpiCard,{label:"Total Removed",value:`﷼${fmt(totalOut)}`,color:"#f87171",icon:"📤"}),
+      React.createElement(KpiCard,{label:"Open Debts",value:`﷼${fmt(totalDebt)}`,color:"#fb923c",icon:"💳"}),
+      React.createElement(KpiCard,{label:"Varieties",value:varieties,color:"#818cf8",icon:"🗂️"})
+    ),
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"📦 Current Stock Overview"),
+      Object.keys(stockMap).length===0&&React.createElement("div",{style:S.empty},"No stock added yet"),
+      Object.values(stockMap).map(item=>{
+        const cur=item.totalPcs-(remMap[item.name]||0);
+        return React.createElement("div",{key:item.name,style:S.row},
+          React.createElement("span",{style:{fontWeight:600,fontSize:14}},item.name),
+          React.createElement("span",{style:{...S.badge,background:cur<0?"#dc2626":"#166534"}},`${cur} pcs`)
+        );
+      })
+    ),
+    openDebts.length>0&&React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"💳 Outstanding Debts"),
+      openDebts.map(d=>{
+        const total=d.items.reduce((a,i)=>a+Number(i.qty)*Number(i.price),0);
+        return React.createElement("div",{key:d.id,style:S.row},
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontWeight:600,fontSize:14}},d.debtor),
+            React.createElement("div",{style:{fontSize:11,color:"#6b7280"}},`Due: ${d.dueDate||"—"}`)
+          ),
+          React.createElement("span",{style:{...S.badge,background:"#92400e"}},`﷼${fmt(total)}`)
+        );
+      })
+    )
+  );
+}
+
+// ══ STOCK PAGE ═══════════════════════════════════════════════════════════════
+function StockPage({stock,setStock}){
+  const [form,setForm]=useState({name:"",pcs:"",price:"",unit:"pcs"});
+  const [editId,setEditId]=useState(null);
+  const [editData,setEditData]=useState({});
+  const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const add=()=>{
+    if(!form.name.trim()||!form.pcs||!form.price)return alert("Please fill all fields");
+    setStock(p=>[...p,{id:uid(),...form,name:form.name.trim(),date:today()}]);
+    setForm({name:"",pcs:"",price:"",unit:"pcs"});
+  };
+  return React.createElement("div",{style:S.page},
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"📥 Add Stock Entry"),
+      React.createElement(Inp,{label:"Item Name",value:form.name,onChange:v=>upd("name",v),placeholder:"e.g. Rice"}),
+      React.createElement("div",{style:S.row2},
+        React.createElement("div",{style:{flex:1}},React.createElement(Inp,{label:"Quantity",value:form.pcs,onChange:v=>upd("pcs",v),type:"number",placeholder:"0"})),
+        React.createElement("div",{style:{flex:1}},
+          React.createElement("label",{style:S.label},"Unit"),
+          React.createElement("select",{value:form.unit,onChange:e=>upd("unit",e.target.value),style:S.select},
+            ["pcs","carton","kg","box","litre"].map(u=>React.createElement("option",{key:u,value:u},u))
+          )
+        )
+      ),
+      React.createElement(Inp,{label:"Price per unit (﷼)",value:form.price,onChange:v=>upd("price",v),type:"number",placeholder:"0.00"}),
+      React.createElement("button",{onClick:add,style:S.btnGreen},"+ Add to Stock")
+    ),
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},`📋 Stock Entries (${stock.length})`),
+      stock.length===0&&React.createElement("div",{style:S.empty},"No entries yet"),
+      [...stock].reverse().map(e=>editId===e.id?
+        React.createElement("div",{key:e.id,style:{...S.entryCard,borderColor:"#4ade80"}},
+          React.createElement(Inp,{label:"Name",value:editData.name,onChange:v=>setEditData(d=>({...d,name:v}))}),
+          React.createElement("div",{style:S.row2},
+            React.createElement(Inp,{label:"Qty",value:editData.pcs,onChange:v=>setEditData(d=>({...d,pcs:v})),type:"number"}),
+            React.createElement(Inp,{label:"Price ﷼",value:editData.price,onChange:v=>setEditData(d=>({...d,price:v})),type:"number"})
+          ),
+          React.createElement("div",{style:S.row2},
+            React.createElement("button",{onClick:()=>{setStock(p=>p.map(x=>x.id===editId?{...x,...editData}:x));setEditId(null);},style:{...S.btnSmall,background:"#166534"}},"Save"),
+            React.createElement("button",{onClick:()=>setEditId(null),style:{...S.btnSmall,background:"#374151"}},"Cancel")
+          )
+        ):
+        React.createElement("div",{key:e.id,style:S.entryCard},
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
+            React.createElement("div",null,
+              React.createElement("div",{style:{fontWeight:600,fontSize:14}},e.name),
+              React.createElement("div",{style:{fontSize:12,color:"#6b7280"}},`${e.pcs} ${e.unit} × ﷼${e.price} = `,React.createElement("span",{style:{color:"#4ade80"}},`﷼${fmt(e.pcs*e.price)}`)),
+              React.createElement("div",{style:{fontSize:11,color:"#4b5563"}},`📅 ${e.date}`)
+            ),
+            React.createElement("div",{style:{display:"flex",gap:6}},
+              React.createElement("button",{onClick:()=>{setEditId(e.id);setEditData({...e});},style:{...S.iconBtn,background:"#1e40af"}},"✏️"),
+              React.createElement("button",{onClick:()=>setStock(p=>p.filter(x=>x.id!==e.id)),style:{...S.iconBtn,background:"#7f1d1d"}},"🗑️")
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+// ══ REMOVE PAGE ══════════════════════════════════════════════════════════════
+function RemovePage({stock,removals,setRemovals}){
+  const [form,setForm]=useState({name:"",pcs:"",price:"",unit:"pcs"});
+  const [editId,setEditId]=useState(null);
+  const [editData,setEditData]=useState({});
+  const stockNames=[...new Set(stock.map(e=>e.name))];
+  const upd=(k,v)=>setForm(f=>({...f,[k]:v}));
+  const remove=()=>{
+    if(!form.name||!form.pcs||!form.price)return alert("Please fill all fields");
+    setRemovals(p=>[...p,{id:uid(),...form,date:today()}]);
+    setForm({name:"",pcs:"",price:"",unit:"pcs"});
+  };
+  const variance=removals.map(r=>{
+    const rel=stock.filter(s=>s.name===r.name);
+    const tq=rel.reduce((a,s)=>a+Number(s.pcs),0);
+    const tv=rel.reduce((a,s)=>a+Number(s.pcs)*Number(s.price),0);
+    const avg=tq>0?tv/tq:0;
+    return{...r,variance:Number(r.pcs)*Number(r.price)-Number(r.pcs)*avg};
+  });
+  return React.createElement("div",{style:S.page},
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"📤 Remove from Stock"),
+      React.createElement("div",{style:{marginBottom:8}},
+        React.createElement("label",{style:S.label},"Item Name"),
+        React.createElement("select",{value:form.name,onChange:e=>upd("name",e.target.value),style:S.select},
+          React.createElement("option",{value:""},"— Select item —"),
+          stockNames.map(n=>React.createElement("option",{key:n,value:n},n))
+        )
+      ),
+      React.createElement("div",{style:S.row2},
+        React.createElement("div",{style:{flex:1}},React.createElement(Inp,{label:"Qty Removed",value:form.pcs,onChange:v=>upd("pcs",v),type:"number"})),
+        React.createElement("div",{style:{flex:1}},
+          React.createElement("label",{style:S.label},"Unit"),
+          React.createElement("select",{value:form.unit,onChange:e=>upd("unit",e.target.value),style:S.select},
+            ["pcs","carton","kg","box","litre"].map(u=>React.createElement("option",{key:u,value:u},u))
+          )
+        )
+      ),
+      React.createElement(Inp,{label:"Removal Price ﷼",value:form.price,onChange:v=>upd("price",v),type:"number"}),
+      React.createElement("button",{onClick:remove,style:S.btnRed},"− Remove from Stock")
+    ),
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},`📋 Removal History (${removals.length})`),
+      removals.length===0&&React.createElement("div",{style:S.empty},"No removals yet"),
+      [...variance].reverse().map(r=>editId===r.id?
+        React.createElement("div",{key:r.id,style:{...S.entryCard,borderColor:"#f87171"}},
+          React.createElement(Inp,{label:"Name",value:editData.name,onChange:v=>setEditData(d=>({...d,name:v}))}),
+          React.createElement("div",{style:S.row2},
+            React.createElement(Inp,{label:"Qty",value:editData.pcs,onChange:v=>setEditData(d=>({...d,pcs:v})),type:"number"}),
+            React.createElement(Inp,{label:"Price ﷼",value:editData.price,onChange:v=>setEditData(d=>({...d,price:v})),type:"number"})
+          ),
+          React.createElement("div",{style:S.row2},
+            React.createElement("button",{onClick:()=>{setRemovals(p=>p.map(x=>x.id===editId?{...x,...editData}:x));setEditId(null);},style:{...S.btnSmall,background:"#166534"}},"Save"),
+            React.createElement("button",{onClick:()=>setEditId(null),style:{...S.btnSmall,background:"#374151"}},"Cancel")
+          )
+        ):
+        React.createElement("div",{key:r.id,style:S.entryCard},
+          React.createElement("div",{style:{display:"flex",justifyContent:"space-between"}},
+            React.createElement("div",{style:{flex:1}},
+              React.createElement("div",{style:{fontWeight:600,fontSize:14}},r.name),
+              React.createElement("div",{style:{fontSize:12,color:"#6b7280"}},`${r.pcs} ${r.unit} × ﷼${r.price} = `,React.createElement("span",{style:{color:"#f87171"}},`﷼${fmt(r.pcs*r.price)}`)),
+              React.createElement("div",{style:{fontSize:11,color:"#4b5563"}},`📅 ${r.date}`),
+              React.createElement("div",{style:{...S.vpill,background:r.variance>=0?"#14532d":"#7f1d1d"}},`${r.variance>=0?"▲":"▼"} Variance: ﷼${fmt(Math.abs(r.variance))} ${r.variance>=0?"profit":"loss"}`)
+            ),
+            React.createElement("div",{style:{display:"flex",flexDirection:"column",gap:6}},
+              React.createElement("button",{onClick:()=>{setEditId(r.id);setEditData({...r});},style:{...S.iconBtn,background:"#1e40af"}},"✏️"),
+              React.createElement("button",{onClick:()=>setRemovals(p=>p.filter(x=>x.id!==r.id)),style:{...S.iconBtn,background:"#7f1d1d"}},"🗑️")
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+// ══ DEBT PAGE ════════════════════════════════════════════════════════════════
+function DebtPage({debts,setDebts,stock,setRemovals}){
+  const [showForm,setShowForm]=useState(false);
+  const [debtor,setDebtor]=useState("");
+  const [date,setDate]=useState(today());
+  const [dueDate,setDueDate]=useState("");
+  const [items,setItems]=useState([{id:uid(),name:"",qty:"",price:""}]);
+  const [expandId,setExpandId]=useState(null);
+  const stockNames=[...new Set(stock.map(e=>e.name))];
+  const addItem=()=>setItems(p=>[...p,{id:uid(),name:"",qty:"",price:""}]);
+  const updItem=(id,f,v)=>setItems(p=>p.map(i=>i.id===id?{...i,[f]:v}:i));
+  const saveDebt=()=>{
+    if(!debtor.trim())return alert("Enter debtor name");
+    if(items.some(i=>!i.name||!i.qty||!i.price))return alert("Fill all item fields");
+    const nd={id:uid(),debtor:debtor.trim(),date,dueDate,items:[...items],paid:false};
+    setDebts(p=>[...p,nd]);
+    items.forEach(i=>setRemovals(p=>[...p,{id:uid(),name:i.name,pcs:i.qty,price:i.price,unit:"pcs",date,note:`Debt:${debtor}`}]));
+    setDebtor("");setDate(today());setDueDate("");setItems([{id:uid(),name:"",qty:"",price:""}]);setShowForm(false);
+  };
+  const openDebts=debts.filter(d=>!d.paid);
+  const paidDebts=debts.filter(d=>d.paid);
+  const openTotal=openDebts.reduce((a,d)=>a+d.items.reduce((b,i)=>b+Number(i.qty)*Number(i.price),0),0);
+  return React.createElement("div",{style:S.page},
+    React.createElement("div",{style:{...S.card,background:"#1c1917",borderColor:"#fb923c"}},
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center"}},
+        React.createElement("div",null,
+          React.createElement("div",{style:S.cardTitle},"💳 Open Debts"),
+          React.createElement("div",{style:{color:"#fb923c",fontSize:22,fontWeight:700}},`﷼${fmt(openTotal)}`)
+        ),
+        React.createElement("div",{style:{...S.badge,background:"#78350f"}},`${openDebts.length} debtors`)
+      )
+    ),
+    React.createElement("button",{onClick:()=>setShowForm(s=>!s),style:S.btnOrange},showForm?"✕ Cancel":"+ New Debt Entry"),
+    showForm&&React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"New Debt Record"),
+      React.createElement(Inp,{label:"Debtor Name",value:debtor,onChange:setDebtor,placeholder:"e.g. Ahmed"}),
+      React.createElement("div",{style:S.row2},
+        React.createElement("div",{style:{flex:1}},React.createElement("label",{style:S.label},"Date"),React.createElement("input",{type:"date",value:date,onChange:e=>setDate(e.target.value),style:S.input})),
+        React.createElement("div",{style:{flex:1}},React.createElement("label",{style:S.label},"Due Date"),React.createElement("input",{type:"date",value:dueDate,onChange:e=>setDueDate(e.target.value),style:S.input}))
+      ),
+      React.createElement("label",{style:{...S.label,marginBottom:8}},"Items Taken"),
+      items.map(item=>React.createElement("div",{key:item.id,style:{...S.entryCard,marginBottom:6}},
+        React.createElement("div",{style:{marginBottom:8}},
+          React.createElement("label",{style:S.label},"Item"),
+          React.createElement("select",{value:item.name,onChange:e=>updItem(item.id,"name",e.target.value),style:S.select},
+            React.createElement("option",{value:""},"— Select —"),
+            stockNames.map(n=>React.createElement("option",{key:n,value:n},n))
+          )
+        ),
+        React.createElement("div",{style:S.row2},
+          React.createElement(Inp,{label:"Qty",value:item.qty,onChange:v=>updItem(item.id,"qty",v),type:"number"}),
+          React.createElement(Inp,{label:"Price ﷼",value:item.price,onChange:v=>updItem(item.id,"price",v),type:"number"})
+        ),
+        React.createElement("div",{style:{color:"#4ade80",fontSize:12,marginBottom:4}},`Total: ﷼${fmt(item.qty*item.price)}`),
+        items.length>1&&React.createElement("button",{onClick:()=>setItems(p=>p.filter(i=>i.id!==item.id)),style:{...S.btnSmall,background:"#7f1d1d",marginTop:4,width:"100%"}},"Remove item")
+      )),
+      React.createElement("button",{onClick:addItem,style:{...S.btnSmall,background:"#1e3a5f",marginBottom:8,width:"100%"}},"+ Add another item"),
+      React.createElement("button",{onClick:saveDebt,style:S.btnOrange},"💾 Save Debt")
+    ),
+    openDebts.map(d=>{
+      const total=d.items.reduce((a,i)=>a+Number(i.qty)*Number(i.price),0);
+      const exp=expandId===d.id;
+      return React.createElement("div",{key:d.id,style:{...S.entryCard,borderColor:"#fb923c"}},
+        React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
+          React.createElement("div",{onClick:()=>setExpandId(exp?null:d.id),style:{flex:1,cursor:"pointer",paddingRight:8}},
+            React.createElement("div",{style:{fontWeight:600,fontSize:14}},`${d.debtor} ${exp?"▲":"▼"}`),
+            React.createElement("div",{style:{fontSize:11,color:"#6b7280"}},`📅 ${d.date} | Due: ${d.dueDate||"—"}`),
+            React.createElement("div",{style:{color:"#fb923c",fontWeight:700}},`﷼${fmt(total)}`)
+          ),
+          React.createElement("div",{style:{display:"flex",gap:6}},
+            React.createElement("button",{onClick:()=>setDebts(p=>p.map(x=>x.id===d.id?{...x,paid:true}:x)),style:{...S.iconBtn,background:"#166534"}},"✓"),
+            React.createElement("button",{onClick:()=>setDebts(p=>p.filter(x=>x.id!==d.id)),style:{...S.iconBtn,background:"#7f1d1d"}},"🗑️")
+          )
+        ),
+        exp&&React.createElement("div",{style:{marginTop:8}},
+          d.items.map((i,idx)=>React.createElement("div",{key:idx,style:{fontSize:12,color:"#9ca3af",padding:"4px 0",borderBottom:"1px solid #1f2937"}},
+            `${i.name} — ${i.qty} pcs × ﷼${i.price} = `,React.createElement("span",{style:{color:"#fb923c"}},`﷼${fmt(i.qty*i.price)}`)
+          ))
+        )
+      );
+    }),
+    paidDebts.length>0&&React.createElement("div",{style:S.card},
+      React.createElement("div",{style:{...S.cardTitle,color:"#6b7280"}},`✓ Cleared Debts (${paidDebts.length})`),
+      paidDebts.map(d=>{
+        const total=d.items.reduce((a,i)=>a+Number(i.qty)*Number(i.price),0);
+        return React.createElement("div",{key:d.id,style:{...S.row,opacity:0.5}},
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontWeight:600,fontSize:14}},d.debtor),
+            React.createElement("div",{style:{fontSize:11,color:"#6b7280"}},d.date)
+          ),
+          React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8}},
+            React.createElement("span",{style:{color:"#4ade80"}},`﷼${fmt(total)}`),
+            React.createElement("button",{onClick:()=>setDebts(p=>p.filter(x=>x.id!==d.id)),style:{...S.iconBtn,background:"#374151"}},"🗑️")
+          )
+        );
+      })
+    )
+  );
+}
+
+// ══ SUMMARY PAGE ═════════════════════════════════════════════════════════════
+function SummaryPage({stock,removals,debts,setStock,setRemovals,setDebts}){
+  const [confirm,setConfirm]=useState(false);
+  const [backupMsg,setBackupMsg]=useState("");
+  const names=[...new Set([...stock.map(e=>e.name),...removals.map(e=>e.name)])];
+  const stats=names.map(name=>{
+    const entries=stock.filter(s=>s.name===name);
+    const rems=removals.filter(r=>r.name===name);
+    const tIn=entries.reduce((a,e)=>a+Number(e.pcs),0);
+    const tInV=entries.reduce((a,e)=>a+Number(e.pcs)*Number(e.price),0);
+    const tOut=rems.reduce((a,r)=>a+Number(r.pcs),0);
+    const tOutV=rems.reduce((a,r)=>a+Number(r.pcs)*Number(r.price),0);
+    const prices=[...new Map(entries.map(e=>[e.price,e])).values()].map(e=>e.price);
+    return{name,tIn,tInV,tOut,tOutV,current:tIn-tOut,prices,entries,rems};
+  });
+  const gIn=stats.reduce((a,i)=>a+i.tInV,0);
+  const gOut=stats.reduce((a,i)=>a+i.tOutV,0);
+  const debtTotal=debts.filter(d=>!d.paid).reduce((a,d)=>a+d.items.reduce((b,i)=>b+Number(i.qty)*Number(i.price),0),0);
+
+  // Export backup as JSON file
+  const exportData=()=>{
+    const data={stock,removals,debts,exported:new Date().toISOString()};
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=`stockmate-backup-${today()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setBackupMsg("✅ Backup saved! Store it safely.");
+    setTimeout(()=>setBackupMsg(""),3000);
+  };
+
+  // Import backup from JSON file
+  const importData=(e)=>{
+    const file=e.target.files[0];
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const data=JSON.parse(ev.target.result);
+        if(data.stock&&data.removals&&data.debts){
+          setStock(data.stock);
+          setRemovals(data.removals);
+          setDebts(data.debts);
+          setBackupMsg("✅ Data restored successfully!");
+        }else{
+          setBackupMsg("❌ Invalid backup file.");
+        }
+      }catch{setBackupMsg("❌ Could not read file.");}
+      setTimeout(()=>setBackupMsg(""),3000);
+    };
+    reader.readAsText(file);
+    e.target.value="";
+  };
+
+  return React.createElement("div",{style:S.page},
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"📊 Full Summary"),
+      React.createElement(SumRow,{label:"Total Stock Entered",val:`﷼${fmt(gIn)}`,color:"#4ade80"}),
+      React.createElement(SumRow,{label:"Total Removed Value",val:`﷼${fmt(gOut)}`,color:"#f87171"}),
+      React.createElement(SumRow,{label:"Net Balance",val:`﷼${fmt(gIn-gOut)}`,color:"#818cf8"}),
+      React.createElement(SumRow,{label:"Open Debts",val:`﷼${fmt(debtTotal)}`,color:"#fb923c"}),
+      React.createElement(SumRow,{label:"Varieties",val:`${names.length} items`,color:"#67e8f9"})
+    ),
+    stats.map(item=>React.createElement("div",{key:item.name,style:S.card},
+      React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}},
+        React.createElement("div",{style:S.cardTitle},item.name),
+        React.createElement("span",{style:{...S.badge,background:item.current<0?"#dc2626":"#166534"}},`${item.current} left`)
+      ),
+      React.createElement(SumRow,{label:"In",val:`${item.tIn} pcs / ﷼${fmt(item.tInV)}`,color:"#4ade80"}),
+      React.createElement(SumRow,{label:"Out",val:`${item.tOut} pcs / ﷼${fmt(item.tOutV)}`,color:"#f87171"}),
+      item.prices.length>1&&React.createElement("div",{style:{fontSize:11,color:"#fbbf24",marginTop:4}},`⚠️ Multiple prices: ${item.prices.map(p=>`﷼${p}`).join(", ")}`),
+      item.rems.length>0&&React.createElement("div",{style:{marginTop:6}},
+        React.createElement("div",{style:{fontSize:11,color:"#9ca3af",marginBottom:4}},"Removal variance:"),
+        item.rems.map((r,i)=>{
+          const avg=item.tInV/(item.tIn||1);
+          const v=Number(r.pcs)*Number(r.price)-Number(r.pcs)*avg;
+          return React.createElement("div",{key:i,style:{fontSize:11,color:"#9ca3af",padding:"3px 0",borderBottom:"1px solid #111827"}},
+            `${r.date}: ${r.pcs} ${r.unit} @ ﷼${r.price} → `,React.createElement("span",{style:{color:v>=0?"#4ade80":"#f87171"}},`${v>=0?"▲":"▼"} ﷼${fmt(Math.abs(v))}`)
+          );
+        })
+      )
+    )),
+    // Backup / Restore card
+    React.createElement("div",{style:{...S.card,borderColor:"#1d4ed8"}},
+      React.createElement("div",{style:S.cardTitle},"💾 Backup & Restore"),
+      React.createElement("div",{style:{fontSize:12,color:"#6b7280",marginBottom:10,lineHeight:1.5}},
+        "Export your data as a JSON file to keep it safe. Import it anytime to restore."
+      ),
+      backupMsg&&React.createElement("div",{style:{fontSize:13,color:backupMsg.startsWith("✅")?"#4ade80":"#f87171",marginBottom:8,fontWeight:600}},backupMsg),
+      React.createElement("button",{onClick:exportData,style:{...S.btnBlue,marginBottom:8}},"📤 Export Backup"),
+      React.createElement("label",{style:{...S.btnSmall,background:"#1e3a5f",display:"block",width:"100%",textAlign:"center",padding:"14px 12px",borderRadius:12,cursor:"pointer",fontSize:16,color:"#93c5fd",fontWeight:700}},
+        "📥 Import Backup",
+        React.createElement("input",{type:"file",accept:".json",onChange:importData,style:{display:"none"}})
+      )
+    ),
+    // Reset card
+    React.createElement("div",{style:S.card},
+      React.createElement("div",{style:S.cardTitle},"⚠️ Reset All Data"),
+      !confirm?React.createElement("button",{onClick:()=>setConfirm(true),style:{...S.btnSmall,background:"#7f1d1d",width:"100%",padding:14,fontSize:15}},"Reset Everything"):
+      React.createElement("div",null,
+        React.createElement("div",{style:{color:"#f87171",marginBottom:8,fontSize:13}},"Are you sure? This cannot be undone."),
+        React.createElement("div",{style:S.row2},
+          React.createElement("button",{onClick:()=>{setStock([]);setRemovals([]);setDebts([]);setConfirm(false);},style:{...S.btnSmall,background:"#dc2626"}},"Yes, Reset"),
+          React.createElement("button",{onClick:()=>setConfirm(false),style:{...S.btnSmall,background:"#374151"}},"Cancel")
+        )
+      )
+    )
+  );
+}
+
+// ══ APP ROOT ══════════════════════════════════════════════════════════════════
+function App(){
+  const [tab,setTab]=useState("Dashboard");
+  const [stock,setStock]=useState(()=>loadSync("sm_stock")||[]);
+  const [removals,setRemovals]=useState(()=>loadSync("sm_removals")||[]);
+  const [debts,setDebts]=useState(()=>loadSync("sm_debts")||[]);
+  const [loaded,setLoaded]=useState(false);
+
+  // Load from IndexedDB on mount (more persistent than localStorage on iOS)
+  useEffect(()=>{
+    Promise.all([idbGet("sm_stock"),idbGet("sm_removals"),idbGet("sm_debts")]).then(([s,r,d])=>{
+      if(s)setStock(s);
+      if(r)setRemovals(r);
+      if(d)setDebts(d);
+      setLoaded(true);
+    }).catch(()=>setLoaded(true));
+  },[]);
+
+  // Save to both storages on change
+  useEffect(()=>{if(loaded){saveSync("sm_stock",stock);idbSet("sm_stock",stock);}},[stock,loaded]);
+  useEffect(()=>{if(loaded){saveSync("sm_removals",removals);idbSet("sm_removals",removals);}},[removals,loaded]);
+  useEffect(()=>{if(loaded){saveSync("sm_debts",debts);idbSet("sm_debts",debts);}},[debts,loaded]);
+
+  return React.createElement("div",{id:"app-shell",style:{background:"#0a0a0f",height:"100%",height:"100dvh",color:"#f1f5f9",display:"flex",flexDirection:"column",maxWidth:430,margin:"0 auto",overflow:"hidden"}},
+    // Header
+    React.createElement("div",{style:S.header},
+      React.createElement("span",{style:S.logo},"📦 StockMate"),
+      React.createElement("span",{style:{fontSize:11,color:"#64748b"}},"Inventory Manager")
+    ),
+    // Content scroll area
+    React.createElement("div",{style:{flex:1,overflowY:"auto",WebkitOverflowScrolling:"touch",overscrollBehavior:"contain"}},
+      tab==="Dashboard"&&React.createElement(Dashboard,{stock,removals,debts}),
+      tab==="Stock"&&React.createElement(StockPage,{stock,setStock}),
+      tab==="Remove"&&React.createElement(RemovePage,{stock,removals,setRemovals}),
+      tab==="Debt"&&React.createElement(DebtPage,{debts,setDebts,stock,setRemovals}),
+      tab==="Summary"&&React.createElement(SummaryPage,{stock,removals,debts,setStock,setRemovals,setDebts})
+    ),
+    // Nav bar
+    React.createElement("nav",{style:S.nav},
+      TABS.map(t=>React.createElement("button",{key:t,onClick:()=>setTab(t),style:{...S.navBtn,color:tab===t?"#60a5fa":"#4b5563"}},
+        React.createElement("span",{style:{fontSize:20}},TAB_ICON[t]),
+        React.createElement("span",{style:{fontSize:9,fontWeight:600,letterSpacing:"0.5px"}},t)
+      ))
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
